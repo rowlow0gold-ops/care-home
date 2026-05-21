@@ -1,13 +1,31 @@
 name: Release desktop installers
 
-# Run on git tag (vX.Y.Z) or manually.
+# Triggers:
+#   - any push to main          -> quick `validate` job (green check, no installers)
+#   - git tag matching v*       -> `build` job (signed installer matrix, drafts GitHub Release)
+#   - manual workflow_dispatch  -> same as a tag (for testing)
+#
+# The validate job exists so non-tag pushes don't create phantom
+# "No jobs were run" entries in the Actions tab.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
 jobs:
+  validate:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm workflow file parses + tag-trigger is the path that builds installers
+        run: |
+          echo "✅ Push to branch '${{ github.ref_name }}' — installer builds only run on git tags (v*)."
+          echo "To cut a release: git tag v0.X.Y && git push origin v0.X.Y"
+
   build:
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     strategy:
