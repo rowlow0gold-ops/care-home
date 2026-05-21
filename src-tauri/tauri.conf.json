@@ -28,7 +28,7 @@
     "active": true,
     "targets": ["msi", "nsis", "deb", "rpm", "appimage", "dmg"],
     "publisher": "Minhojan World",
-    "category": "Healthcare",
+    "category": "Healthcare and Fitness",
     "shortDescription": "케어닥 간호 스테이션",
     "longDescription": "Korean franchise nursing-home management — nursing-station companion for the 케어닥 (Care Doc) SaaS. Connects to care.minhojan-world.site.",
     "copyright": "© 2026 Minhojan World",
