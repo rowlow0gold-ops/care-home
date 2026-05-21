@@ -1,18 +1,43 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, reactive, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useQuasar } from "quasar";
-import { useAuthStore } from "@/stores/auth";
+import { useServerSessionStore } from "@/stores/server-session";
+import { server } from "@/lib/server";
 import { useSettingsStore, detectCurrentShift } from "@/stores/settings";
 import { useRoute } from "vue-router";
 import * as XLSX from "xlsx";
 
-const $q      = useQuasar();
-const auth    = useAuthStore();
+const $q       = useQuasar();
+const session  = useServerSessionStore();
 const settings = useSettingsStore();
-const route   = useRoute();
+const route    = useRoute();
+
+// Legacy shim: `auth.user.X` keeps working in BOTH script and template while
+// we migrate writes off rusqlite. Reactive getter so reads stay live.
+// Map server roles -> legacy labels for any UI conditionals not yet swapped:
+//   caregiver/nurse    -> "staff"
+//   branch_manager     -> "manager"
+//   hq / super_admin   -> "admin"
+const auth = reactive({
+  get user() {
+    const me = session.me;
+    if (!me) return null;
+    return {
+      id: me.id,
+      username: me.email,
+      full_name: me.name,
+      role:
+        me.role === "branch_manager"
+          ? "manager"
+          : me.role === "hq" || me.role === "super_admin"
+            ? "admin"
+            : "staff",
+    };
+  },
+});
 const isStaff = computed(() => auth.user?.role === "staff");
-const canDelete = computed(() => ["manager","admin"].includes(auth.user?.role ?? ""));
+const canDelete = computed(() => ["manager", "admin"].includes(auth.user?.role ?? ""));
 
 // ── Section tabs ──────────────────────────────────────────────────────────────
 type Section = "residents" | "carelog" | "medications" | "healthcharts" | "history";
@@ -181,8 +206,32 @@ const residentOptions = computed(() =>
     .sort((a, b) => a.label.localeCompare(b.label))
 );
 async function loadResidentList() {
-  try { residentList.value = await invoke("list_residents", { search:"", activeOnly:true }); }
-  catch (_) {}
+  try {
+    // MIGRATED: server-mode read path. Maps server shape -> legacy ResidentShort.
+    const srv = await server.residents();
+    residentList.value = srv
+      .filter((r) => r.status === "active")
+      .map((r) => {
+        // Korean names typically lack a first/last split — put the whole name
+        // into `first_name` and leave `last_name` empty so the existing
+        // `${first_name} ${last_name}` interpolation still renders cleanly.
+        return {
+          // Legacy table expected number IDs; UUIDs render fine through Quasar
+          // when only used as v-for keys + dropdown values. Cast through `any`
+          // until each callsite gets typed properly during follow-up passes.
+          id: r.id as unknown as number,
+          first_name: r.full_name,
+          last_name: "",
+          room_number: r.room_number,
+          date_of_birth: r.birth_date,
+          gender: r.sex === "male" ? "M" : r.sex === "female" ? "F" : "O",
+          admission_date: r.admitted_on,
+          discharge_date: null,
+        };
+      });
+  } catch (e) {
+    console.error("loadResidentList (server):", e);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -239,23 +288,64 @@ const activeResCols = [
 async function loadActive() {
   loadingActive.value = true;
   try {
+    // MIGRATED: pull from care-home-server. Pagination + filters are done
+    // client-side for v1 — typical branch has <50 active residents.
+    const srv = await server.residents();
+    let rows = srv.filter((r) => r.status === "active");
+
+    if (resSelectedId.value !== null) {
+      rows = rows.filter((r) => (r.id as unknown as number) === resSelectedId.value);
+    }
+    if (filterCareGrade.value !== null) {
+      rows = rows.filter(
+        (r) => (r.care_grade ?? "") === String(filterCareGrade.value),
+      );
+    }
+    if (filterGender.value) {
+      const want = filterGender.value === "M" ? "male" : "female";
+      rows = rows.filter((r) => r.sex === want);
+    }
+    // cognitive_support filter: server stores it as care_grade='cognitive_support'
+    if (filterCognitive.value !== null) {
+      rows = rows.filter(
+        (r) =>
+          (r.care_grade === "cognitive_support") === filterCognitive.value,
+      );
+    }
+
+    const total = rows.length;
     const p = resPagination.value;
-    const result = await invoke<{ data: Resident[]; total: number }>("list_residents_paged", {
-      status:           "active",
-      residentId:       resSelectedId.value,
-      search:           resSearchFilter.value ? null : null, // name lookup uses residentId
-      careGrade:        filterCareGrade.value,
-      gender:           filterGender.value,
-      cognitiveSupport: filterCognitive.value,
-      page:             p.page,
-      pageSize:         p.rowsPerPage,
-      sortBy:           p.sortBy,
-      sortDesc:         p.descending,
-    });
-    residents.value = result.data;
-    resPagination.value.rowsNumber = result.total;
-  } catch (e:any) { $q.notify({ type:"negative", message:e }); }
-  finally { loadingActive.value = false; }
+    const start = (p.page - 1) * p.rowsPerPage;
+    const page = rows.slice(start, start + p.rowsPerPage);
+
+    residents.value = page.map((r) => ({
+      id: r.id as unknown as number,
+      first_name: r.full_name,
+      last_name: "",
+      date_of_birth: r.birth_date,
+      gender: r.sex === "male" ? "M" : r.sex === "female" ? "F" : "O",
+      room_number: r.room_number,
+      admission_date: r.admitted_on,
+      discharge_date: null,
+      care_grade:
+        r.care_grade && r.care_grade !== "cognitive_support"
+          ? Number(r.care_grade)
+          : null,
+      cognitive_support: r.care_grade === "cognitive_support",
+      primary_diagnosis: null,
+      allergies: null,
+      dietary_restrictions: null,
+      insurance_number: null,
+      notes: null,
+      is_active: r.status === "active",
+      is_deceased: r.status === "deceased",
+    }));
+    resPagination.value.rowsNumber = total;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: e?.message ?? String(e) });
+  } finally {
+    loadingActive.value = false;
+  }
 }
 function openAdd() {
   editingResId.value = null; dialogTitle.value = "Add Resident";
