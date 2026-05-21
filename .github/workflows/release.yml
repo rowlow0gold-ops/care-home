@@ -15,17 +15,17 @@ on:
 
 jobs:
   validate:
-    if: github.ref_type == 'branch'
+    if: startsWith(github.ref, 'refs/heads/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Confirm workflow file parses + tag-trigger is the path that builds installers
+      - name: Confirm workflow file parses
         run: |
-          echo "✅ Push to branch '${{ github.ref_name }}' — installer builds only run on git tags (v*)."
+          echo "✅ Push to ${{ github.ref }} — installer builds only run on git tags (v*)."
           echo "To cut a release: git tag v0.X.Y && git push origin v0.X.Y"
 
   build:
-    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     strategy:
