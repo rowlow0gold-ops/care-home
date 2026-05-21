@@ -59,11 +59,13 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with: { targets: ${{ matrix.target }} }
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache Rust target
         uses: Swatinem/rust-cache@v2
-        with: { workspaces: "src-tauri -> target" }
+        with:
+          workspaces: "src-tauri -> target"
 
       - name: pnpm install
         run: pnpm install --frozen-lockfile=false
