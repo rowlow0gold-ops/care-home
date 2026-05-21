@@ -40,6 +40,23 @@ by `.github/workflows/release.yml` when a `vX.Y.Z` tag is pushed.
 - Chart.js for vitals timelines
 - xlsx for client-side Excel export
 
+## Downloads
+
+Built installers (`.msi`, `.dmg`, `.deb`, `.AppImage`) are published on the
+[GitHub Releases page](https://github.com/rowlow0gold-ops/care-home/releases)
+on every `vX.Y.Z` tag.
+
+> **Code signing.** Releases are signed using a code-signing certificate
+> generously provided by the [SignPath Foundation](https://signpath.org/),
+> the non-profit code-signing service for open-source projects. The
+> SignPath Foundation makes Windows / macOS code signing accessible for
+> independent maintainers who could not otherwise afford a commercial CA.
+
+## Privacy
+
+See [PRIVACY.md](PRIVACY.md). The desktop client is a thin UI over a remote
+API; it does not collect telemetry of any kind.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
