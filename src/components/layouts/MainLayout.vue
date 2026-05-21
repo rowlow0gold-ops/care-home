@@ -26,10 +26,11 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    heading: "Staff", minRole: 2,
+    heading: "Staff", minRole: 1,
     items: [
       { to: "/staff",     icon: "o_badge",          label: "Staff",     minRole: 2 },
       { to: "/schedule",  icon: "o_calendar_month", label: "Schedule",  minRole: 1 },
+      { to: "/leave",     icon: "o_event_busy",     label: "휴가 신청", minRole: 1 },
     ],
   },
   {

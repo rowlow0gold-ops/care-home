@@ -33,6 +33,7 @@ const router = createRouter({
         { path: "health-charts", redirect: { path: "/residents", query: { section: "healthcharts" } } },
         { path: "meals",         name: "meals",         component: () => import("@/pages/MealsPage.vue"),        meta: { minRole: 1 } },
         { path: "schedule",      name: "schedule",      component: () => import("@/pages/SchedulePage.vue"),     meta: { minRole: 1 } },
+        { path: "leave",         name: "leave",         component: () => import("@/pages/LeavePage.vue"),        meta: { minRole: 1 } },
         { path: "media",         name: "media",         component: () => import("@/pages/MediaPage.vue"),        meta: { minRole: 1 } },
         { path: "help",          name: "help",          component: () => import("@/pages/HelpPage.vue"),         meta: { minRole: 1 } },
         { path: "notifications", name: "notifications", component: () => import("@/pages/NotificationsPage.vue"),meta: { minRole: 3 } },

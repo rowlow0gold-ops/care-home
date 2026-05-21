@@ -250,6 +250,41 @@ export const server = {
     return fetchJson("/api/v1/dashboard/summary");
   },
 
+  // === leave (휴가 신청) ===
+  leaveBalance() {
+    return fetchJson<{
+      year: number;
+      annual_allocated: number;
+      annual_used: number;
+      annual_remaining: number;
+      sick_used: number;
+    }>("/api/v1/leave-requests/balance");
+  },
+  myLeaveRequests() {
+    return fetchJson<Array<{
+      id: string;
+      leave_type: string;
+      start_date: string;
+      end_date: string;
+      days: number;
+      reason: string | null;
+      status: "pending" | "approved" | "rejected" | "cancelled";
+      requested_at: string;
+    }>>("/api/v1/leave-requests");
+  },
+  createLeaveRequest(payload: {
+    leave_type: string;
+    start_date: string;
+    end_date: string;
+    days: number;
+    reason?: string | null;
+  }) {
+    return fetchJson("/api/v1/leave-requests", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
   // === photo approval (receptionist / admin / center manager) ===
   photosPending(status: "pending" | "approved" | "rejected" = "pending") {
     return fetchJson<
