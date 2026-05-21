@@ -595,7 +595,9 @@ const editLogSubmitting = ref(false);
 
 function canEditLog(log: CareLog) {
   if (!auth.user) return false;
-  if (auth.user.role === "staff") return log.staff_id === auth.user.id;
+  // log.staff_id is legacy number; auth.user.id is server UUID string. Compare
+  // as strings to avoid TS2367 since the actual values may not collide anyway.
+  if (auth.user.role === "staff") return String(log.staff_id) === String(auth.user.id);
   return true;
 }
 const dailyCols = [

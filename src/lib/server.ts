@@ -70,7 +70,7 @@ export interface ServerError extends Error {
   body?: unknown;
 }
 
-async function fetchJson<T>(
+async function fetchJson<T = any>(
   path: string,
   init: RequestInit = {},
   authed = true,
