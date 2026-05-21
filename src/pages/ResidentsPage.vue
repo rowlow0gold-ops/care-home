@@ -542,9 +542,49 @@ const dailyCols = [
 async function loadDaily() {
   dailyLoading.value = true;
   try {
-    dailyLogs.value = await invoke<CareLog[]>("list_care_logs", { residentId:clSelectedRes.value ?? null, date:null, category:clCategory.value, shift:clShift.value, limit:null });
-  } catch (e) { $q.notify({ type:"negative", message:`Failed: ${e}` }); }
-  finally { dailyLoading.value = false; }
+    // MIGRATED: pull care logs from server. Server requires a resident_id
+    // (no "all residents" endpoint yet), so when none is selected we
+    // aggregate across the active list.
+    let logs: any[] = [];
+    if (clSelectedRes.value !== null) {
+      logs = await server.careLogsFor(String(clSelectedRes.value));
+    } else {
+      const ids = residentList.value.map((r) => String(r.id));
+      const fetched = await Promise.all(
+        ids.slice(0, 20).map((id) =>
+          server.careLogsFor(id).catch(() => []),
+        ),
+      );
+      logs = fetched.flat();
+    }
+    if (clCategory.value) {
+      logs = logs.filter((l: any) => l.category === clCategory.value);
+    }
+    // shift filter: server has no concept yet — keep only if message contains shift label
+    if (clShift.value) {
+      logs = logs.filter((l: any) =>
+        (l.body ?? "").includes(clShift.value as string),
+      );
+    }
+    dailyLogs.value = logs.map((l: any) => ({
+      id: l.id,
+      resident_id: l.resident_id,
+      resident_name:
+        residentList.value.find((r) => String(r.id) === l.resident_id)?.first_name ?? "",
+      staff_id: null,
+      staff_name: null,
+      shift: clShift.value ?? "",
+      category: l.category,
+      content: l.body,
+      is_incident: false,
+      is_flagged: !!l.flagged,
+      logged_at: l.recorded_at,
+    }));
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `Failed: ${e?.message ?? e}` });
+  } finally {
+    dailyLoading.value = false;
+  }
 }
 async function submitLog() {
   const valid = await newEntryFormRef.value?.validate();
