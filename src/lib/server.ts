@@ -249,6 +249,30 @@ export const server = {
   dashboard() {
     return fetchJson("/api/v1/dashboard/summary");
   },
+
+  // === photo approval (receptionist / admin / center manager) ===
+  photosPending(status: "pending" | "approved" | "rejected" = "pending") {
+    return fetchJson<
+      Array<{
+        id: string;
+        resident_id: string;
+        resident_name: string;
+        branch_id: string;
+        branch_name: string;
+        taken_by_name: string;
+        taken_at: string;
+        caption: string | null;
+        status: string;
+        data_url: string;
+      }>
+    >(`/api/v1/photos/pending?status=${status}`);
+  },
+  decidePhoto(id: string, status: "approved" | "rejected", note?: string) {
+    return fetchJson(`/api/v1/photos/${id}/decide`, {
+      method: "PATCH",
+      body: JSON.stringify({ status, note: note ?? null }),
+    });
+  },
 };
 
 export type { MeUser };

@@ -33,11 +33,11 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    heading: "Service", minRole: 2,
+    heading: "Service", minRole: 1,
     items: [
-      { to: "/media",         icon: "o_photo_library", label: "Media",         minRole: 2 },
-      { to: "/notifications", icon: "o_mail",           label: "Notifications", minRole: 2 },
-      { to: "/reports",       icon: "o_description",    label: "Reports",       minRole: 2 },
+      { to: "/media",         icon: "o_photo_camera",  label: "사진 승인",     minRole: 1 },
+      { to: "/notifications", icon: "o_mail",          label: "Notifications", minRole: 2 },
+      { to: "/reports",       icon: "o_description",   label: "Reports",       minRole: 2 },
     ],
   },
   {
