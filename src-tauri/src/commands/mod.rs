@@ -1,0 +1,11 @@
+pub mod auth;
+pub mod residents;
+pub mod care_logs;
+pub mod medications;
+pub mod staff;
+pub mod vitals;
+pub mod meals;
+pub mod accounting;
+pub mod settings;
+pub mod schedules;
+pub mod teams;
