@@ -163,6 +163,66 @@ export const server = {
   resident(id: string) {
     return fetchJson(`/api/v1/residents/${id}`);
   },
+  createResident(payload: {
+    full_name: string;
+    sex: "male" | "female" | "other";
+    birth_date: string;
+    care_grade?: string | null;
+    room_number?: string | null;
+    admitted_on: string;
+  }) {
+    return fetchJson("/api/v1/residents", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  updateResident(
+    id: string,
+    payload: Partial<{
+      full_name: string;
+      sex: string;
+      care_grade: string | null;
+      room_number: string | null;
+      birth_date: string;
+      admitted_on: string;
+    }>,
+  ) {
+    return fetchJson(`/api/v1/residents/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+  dischargeResident(id: string, dischargedOn: string) {
+    return fetchJson(`/api/v1/residents/${id}/discharge`, {
+      method: "POST",
+      body: JSON.stringify({ discharged_on: dischargedOn }),
+    });
+  },
+  deceaseResident(id: string) {
+    return fetchJson(`/api/v1/residents/${id}/decease`, { method: "POST" });
+  },
+  createMedication(payload: {
+    resident_id: string;
+    name: string;
+    dosage: string;
+    frequency: string;
+    route?: string | null;
+    start_date: string;
+    end_date?: string | null;
+    prescriber?: string | null;
+    instructions?: string | null;
+  }) {
+    return fetchJson("/api/v1/medications", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  stopMedication(id: string) {
+    return fetchJson(`/api/v1/medications/${id}/stop`, { method: "PATCH" });
+  },
+  flagCareLog(id: string) {
+    return fetchJson(`/api/v1/care-logs/${id}/flag`, { method: "PATCH" });
+  },
   vitalsFor(residentId: string) {
     return fetchJson(`/api/v1/residents/${residentId}/vitals`);
   },

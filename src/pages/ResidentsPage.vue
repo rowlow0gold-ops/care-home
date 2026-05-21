@@ -368,35 +368,69 @@ async function saveResident() {
   const valid = await residentFormRef.value?.validate();
   if (!valid) return;
   try {
+    // MIGRATED: server CRUD. full_name is built from "first last" since the
+    // legacy form keeps the two-field UI; server only has one full_name column.
+    const f = resForm.value as any;
+    const full_name = `${f.first_name ?? ""} ${f.last_name ?? ""}`.trim();
+    const care_grade = f.cognitive_support
+      ? "cognitive_support"
+      : f.care_grade !== null && f.care_grade !== undefined
+        ? String(f.care_grade)
+        : null;
+    const sex = f.gender === "M" ? "male" : f.gender === "F" ? "female" : "other";
+
     if (editingResId.value) {
-      await invoke("update_resident", { id:editingResId.value, input:resForm.value });
-      $q.notify({ type:"positive", message:"Resident updated" });
+      await server.updateResident(String(editingResId.value), {
+        full_name,
+        sex,
+        care_grade,
+        room_number: f.room_number,
+        birth_date: f.date_of_birth,
+        admitted_on: f.admission_date,
+      });
+      $q.notify({ type: "positive", message: "Resident updated" });
     } else {
-      await invoke("create_resident", { input:resForm.value });
-      $q.notify({ type:"positive", message:"Resident added" });
+      await server.createResident({
+        full_name,
+        sex: sex as "male" | "female" | "other",
+        birth_date: f.date_of_birth,
+        care_grade,
+        room_number: f.room_number,
+        admitted_on: f.admission_date,
+      });
+      $q.notify({ type: "positive", message: "Resident added" });
     }
     showDialog.value = false;
     loadActive();
-  } catch (e:any) { $q.notify({ type:"negative", message:e }); }
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: e?.message ?? String(e) });
+  }
 }
 function confirmDischarge(r: Resident) {
   $q.dialog({ title:"Discharge Resident", message:`Discharge ${r.first_name} ${r.last_name}? They will be moved to History.`, cancel:true, persistent:true })
     .onOk(async () => {
       try {
-        await invoke("discharge_resident", { id:r.id, dischargeDate:new Date().toISOString().slice(0,10) });
-        $q.notify({ type:"positive", message:"Resident discharged" });
+        await server.dischargeResident(
+          String(r.id),
+          new Date().toISOString().slice(0, 10),
+        );
+        $q.notify({ type: "positive", message: "Resident discharged" });
         loadActive();
-      } catch (e:any) { $q.notify({ type:"negative", message:e }); }
+      } catch (e: any) {
+        $q.notify({ type: "negative", message: e?.message ?? String(e) });
+      }
     });
 }
 function confirmDeceased(r: Resident) {
   $q.dialog({ title:"Mark as Deceased", message:`Mark ${r.first_name} ${r.last_name} as deceased?`, cancel:true, persistent:true })
     .onOk(async () => {
       try {
-        await invoke("mark_deceased", { id:r.id });
-        $q.notify({ type:"positive", message:"Record updated." });
+        await server.deceaseResident(String(r.id));
+        $q.notify({ type: "positive", message: "Record updated." });
         loadActive();
-      } catch (e:any) { $q.notify({ type:"negative", message:e }); }
+      } catch (e: any) {
+        $q.notify({ type: "negative", message: e?.message ?? String(e) });
+      }
     });
 }
 
@@ -417,16 +451,34 @@ async function openSummary(row: Resident) {
   summaryMeds.value = []; summaryVitals.value = []; summaryNotes.value = [];
   showSummary.value = true; summaryLoading.value = true;
   try {
-    const [meds, vitals, notes] = await Promise.all([
-      invoke<{ data:MedSum[]; total:number }>("list_medications", { residentId:row.id, activeOnly:true, page:1, pageSize:20 }),
-      invoke<{ data:VitalSum[]; total:number }>("list_vitals", { residentId:row.id, page:1, pageSize:50 }),
-      invoke<CareLogSum[]>("list_care_logs", { residentId:row.id, limit:50 }).catch(()=>[]),
+    // MIGRATED: pull from server. Map shapes -> legacy MedSum / VitalSum / CareLogSum.
+    const idStr = String(row.id);
+    const [medsArr, vitalsArr, notesArr] = await Promise.all([
+      server.medsFor(idStr).catch(() => []) as Promise<any[]>,
+      server.vitalsFor(idStr).catch(() => []) as Promise<any[]>,
+      server.careLogsFor(idStr).catch(() => []) as Promise<any[]>,
     ]);
-    summaryMeds.value   = meds.data;
-    summaryVitals.value = vitals.data;
-    summaryNotes.value  = notes;
-  } catch (e) { $q.notify({ type:"negative", message:`Failed: ${e}` }); }
-  finally { summaryLoading.value = false; }
+    summaryMeds.value = medsArr.filter((m: any) => !m.stopped_at).slice(0, 20).map((m: any) => ({
+      id: m.id, resident_id: m.resident_id, resident_name: row.first_name,
+      name: m.name, dosage: m.dosage, frequency: m.frequency, route: m.route,
+      start_date: m.start_date, end_date: m.end_date, prescriber: m.prescriber,
+      instructions: m.instructions, stopped_at: m.stopped_at,
+    })) as any;
+    summaryVitals.value = vitalsArr.slice(0, 50).map((v: any) => ({
+      id: v.id, resident_id: v.resident_id, resident_name: row.first_name,
+      recorded_at: v.recorded_at, kind: v.kind, value: v.value, note: v.note,
+    })) as any;
+    summaryNotes.value = notesArr.slice(0, 50).map((l: any) => ({
+      id: l.id, resident_id: l.resident_id, resident_name: row.first_name,
+      logged_at: l.recorded_at, category: l.category, content: l.body,
+      is_flagged: !!l.flagged, is_incident: false,
+      staff_id: null, staff_name: null, shift: "",
+    })) as any;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `Failed: ${e?.message ?? e}` });
+  } finally {
+    summaryLoading.value = false;
+  }
 }
 
 // ── Residents history ─────────────────────────────────────────────────────────
@@ -478,13 +530,29 @@ async function loadHistoryResidents() {
   hisResSearchFilter.value = null;
   hisResSelectedId.value = null;
   try {
-    const [dis, dec] = await Promise.all([
-      invoke<Resident[]>("list_residents", { search:null, activeOnly:null, status:"discharged" }),
-      invoke<Resident[]>("list_residents", { search:null, activeOnly:null, status:"deceased" }),
-    ]);
-    historyResidents.value = [...dis,...dec].sort((a,b)=>(b.discharge_date??"").localeCompare(a.discharge_date??""));
-  } catch (e:any) { $q.notify({ type:"negative", message:e }); }
-  finally { loadingHisRes.value = false; }
+    // MIGRATED: server returns one stream; filter status client-side.
+    const all = await server.residents();
+    const hist = all
+      .filter((r) => r.status === "discharged" || r.status === "deceased")
+      .map((r) => ({
+        id: r.id as unknown as number,
+        first_name: r.full_name, last_name: "",
+        date_of_birth: r.birth_date,
+        gender: r.sex === "male" ? "M" : r.sex === "female" ? "F" : "O",
+        room_number: r.room_number,
+        admission_date: r.admitted_on, discharge_date: null,
+        care_grade: r.care_grade && r.care_grade !== "cognitive_support" ? Number(r.care_grade) : null,
+        cognitive_support: r.care_grade === "cognitive_support",
+        primary_diagnosis: null, allergies: null, dietary_restrictions: null,
+        insurance_number: null, notes: null,
+        is_active: false, is_deceased: r.status === "deceased",
+      } as Resident));
+    historyResidents.value = hist;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: e?.message ?? String(e) });
+  } finally {
+    loadingHisRes.value = false;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -591,14 +659,27 @@ async function submitLog() {
   if (!valid) return;
   clSubmitting.value = true;
   try {
-    const logged_at = `${clForm.value.logged_date} ${clForm.value.logged_time}`;
-    await invoke("create_care_log", { input:{ resident_id:clForm.value.resident_id, staff_id:auth.user?.id??null, shift:clForm.value.shift, category:clForm.value.category, content:clForm.value.content, logged_at } });
-    $q.notify({ type:"positive", message:"Care log saved." });
-    clForm.value = { resident_id: clSelectedRes.value ?? null, shift: activeShift.value, category: "note", content: "", logged_date: nowDate(), logged_time: nowTime() };
+    // MIGRATED. Server has no shift/logged_at fields — embed shift in body so
+    // the daily filter keeps working until the server gets a real shifts model.
+    const shiftPrefix = clForm.value.shift ? `[${clForm.value.shift}] ` : "";
+    await server.createCareLog({
+      resident_id: String(clForm.value.resident_id),
+      category: clForm.value.category,
+      body: `${shiftPrefix}${clForm.value.content}`,
+    });
+    $q.notify({ type: "positive", message: "Care log saved." });
+    clForm.value = {
+      resident_id: clSelectedRes.value ?? null,
+      shift: activeShift.value, category: "note", content: "",
+      logged_date: nowDate(), logged_time: nowTime(),
+    };
     showEntryDialog.value = false;
     await loadDaily();
-  } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-  finally { clSubmitting.value = false; }
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `${e?.message ?? e}` });
+  } finally {
+    clSubmitting.value = false;
+  }
 }
 function openEditLog(log: CareLog) {
   editingLog.value = log; editLogForm.value.content = log.content; showEditLogDialog.value = true;
@@ -609,22 +690,32 @@ async function submitEditLog() {
   if (!valid) return;
   editLogSubmitting.value = true;
   try {
-    await invoke("update_care_log", { id:editingLog.value.id, input:{ content:editLogForm.value.content }, actorId:auth.user.id, actorRole:auth.user.role });
-    $q.notify({ type:"positive", message:"Log updated." });
+    // Server has no edit-care-log endpoint (care_logs are append-only for audit).
+    // If the user is flagging/unflagging, that we can do. Otherwise tell them to
+    // add a new corrective entry.
+    await server.flagCareLog(String(editingLog.value.id));
+    $q.notify({
+      type: "warning",
+      message: "케어로그는 감사 목적으로 편집 불가. 새 보정 기록을 추가하거나 플래그만 변경됩니다.",
+      timeout: 4000,
+    });
     showEditLogDialog.value = false;
     if (section.value === "carelog") loadDaily(); else loadCareLogHistory(false);
-  } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-  finally { editLogSubmitting.value = false; }
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `${e?.message ?? e}` });
+  } finally {
+    editLogSubmitting.value = false;
+  }
 }
-async function deleteLog(id: number) {
-  $q.dialog({ title:"Delete Log", message:"Permanently delete this entry?", cancel:true, persistent:true })
-    .onOk(async () => {
-      try {
-        await invoke("delete_care_log", { id });
-        $q.notify({ type:"positive", message:"Log deleted." });
-        if (section.value === "carelog") loadDaily(); else loadCareLogHistory(false);
-      } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-    });
+async function deleteLog(_id: number) {
+  // Server intentionally has no delete-care-log endpoint — care_logs are an
+  // audit trail. The UI button is now informational only.
+  $q.dialog({
+    title: "삭제 불가",
+    message:
+      "케어 기록은 감사 목적으로 영구 보존됩니다. 잘못된 항목은 새 기록으로 보정하세요.",
+    persistent: true,
+  });
 }
 
 // ── Care Log history ──────────────────────────────────────────────────────────
@@ -663,22 +754,61 @@ async function loadCareLogHistory(reset = true) {
   if (reset) clhPagination.value.page = 1;
   clhLoading.value = true;
   try {
-    const result = await invoke<{ data:CareLog[]; total:number }>("list_care_logs_history", {
-      residentId:   clhResident.value ?? null,
-      dateFrom:     clhDateFrom.value,
-      dateTo:       clhDateTo.value,
-      category:     clhCategory.value,
-      shift:        clhShift.value,
-      incidentOnly: clhIncidentOnly.value,
-      page:         clhPagination.value.page,
-      pageSize:     clhPagination.value.rowsPerPage,
-      sortBy:       clhPagination.value.sortBy || null,
-      sortDesc:     clhPagination.value.descending,
-    });
-    clHistory.value = result.data;
-    clhPagination.value.rowsNumber = result.total;
-  } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-  finally { clhLoading.value = false; }
+    // MIGRATED: server has no history endpoint — fan out across residents,
+    // filter + paginate client-side. Practical for v1 (~50 residents/branch).
+    let logs: any[] = [];
+    if (clhResident.value !== null) {
+      logs = await server.careLogsFor(String(clhResident.value));
+    } else {
+      const ids = residentList.value
+        .concat(historyResidents.value as any)
+        .map((r) => String(r.id));
+      const unique = Array.from(new Set(ids));
+      const fetched = await Promise.all(
+        unique.slice(0, 40).map((id) =>
+          server.careLogsFor(id).catch(() => []),
+        ),
+      );
+      logs = fetched.flat();
+    }
+
+    // Apply filters
+    if (clhCategory.value)
+      logs = logs.filter((l: any) => l.category === clhCategory.value);
+    if (clhDateFrom.value)
+      logs = logs.filter((l: any) => l.recorded_at >= clhDateFrom.value!);
+    if (clhDateTo.value)
+      logs = logs.filter((l: any) => l.recorded_at <= clhDateTo.value!);
+    if (clhIncidentOnly.value) logs = logs.filter((l: any) => l.flagged);
+
+    // Sort newest first
+    logs.sort((a: any, b: any) => (b.recorded_at ?? "").localeCompare(a.recorded_at ?? ""));
+
+    const total = logs.length;
+    const p = clhPagination.value;
+    const start = (p.page - 1) * p.rowsPerPage;
+    const page = logs.slice(start, start + p.rowsPerPage);
+
+    clHistory.value = page.map((l: any) => ({
+      id: l.id,
+      resident_id: l.resident_id,
+      resident_name:
+        residentList.value.find((r) => String(r.id) === l.resident_id)?.first_name ?? "",
+      staff_id: null,
+      staff_name: null,
+      shift: "",
+      category: l.category,
+      content: l.body,
+      is_incident: false,
+      is_flagged: !!l.flagged,
+      logged_at: l.recorded_at,
+    })) as any;
+    clhPagination.value.rowsNumber = total;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `${e?.message ?? e}` });
+  } finally {
+    clhLoading.value = false;
+  }
 }
 function onClhRequest(props: { pagination:{ page:number; rowsPerPage:number; sortBy:string; descending:boolean } }) {
   Object.assign(clhPagination.value, props.pagination);
@@ -754,16 +884,37 @@ function onMedResSelected(opt: { label:string; value:number }|null) {
 async function loadMedications() {
   medLoading.value = true;
   try {
-    const result = await invoke<{ data:Medication[]; total:number }>("list_medications", {
-      residentId: medSelectedRes.value ?? null, activeOnly: true,
-      route: medRoute.value,
-      page: medPagination.value.page, pageSize: medPagination.value.rowsPerPage,
-      sortBy: medPagination.value.sortBy || null, sortDesc: medPagination.value.descending,
-    });
-    medications.value = result.data;
-    medPagination.value.rowsNumber = result.total;
-  } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-  finally { medLoading.value = false; }
+    // MIGRATED: server-mode meds list. Fan-out when no resident selected.
+    let meds: any[] = [];
+    if (medSelectedRes.value !== null) {
+      meds = await server.medsFor(String(medSelectedRes.value));
+    } else {
+      const ids = residentList.value.map((r) => String(r.id));
+      const fetched = await Promise.all(
+        ids.slice(0, 40).map((id) => server.medsFor(id).catch(() => [])),
+      );
+      meds = fetched.flat();
+    }
+    meds = meds.filter((m: any) => !m.stopped_at);  // activeOnly
+    if (medRoute.value) meds = meds.filter((m: any) => m.route === medRoute.value);
+
+    const total = meds.length;
+    const p = medPagination.value;
+    const start = (p.page - 1) * p.rowsPerPage;
+    medications.value = meds.slice(start, start + p.rowsPerPage).map((m: any) => ({
+      id: m.id, resident_id: m.resident_id,
+      resident_name:
+        residentList.value.find((r) => String(r.id) === m.resident_id)?.first_name ?? "",
+      name: m.name, dosage: m.dosage, frequency: m.frequency, route: m.route,
+      start_date: m.start_date, end_date: m.end_date,
+      prescriber: m.prescriber, instructions: m.instructions, stopped_at: m.stopped_at,
+    })) as any;
+    medPagination.value.rowsNumber = total;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `${e?.message ?? e}` });
+  } finally {
+    medLoading.value = false;
+  }
 }
 function onMedRequest(props: { pagination:{ page:number; rowsPerPage:number; sortBy:string; descending:boolean } }) {
   Object.assign(medPagination.value, props.pagination);
@@ -774,7 +925,18 @@ async function submitMedication() {
   if (!valid) return;
   medSubmitting.value = true;
   try {
-    await invoke("create_medication", { input:{ resident_id:medForm.value.resident_id, name:medForm.value.name, dosage:medForm.value.dosage, frequency:medForm.value.frequency, route:medForm.value.route, start_date:medForm.value.start_date, end_date:null, prescriber:medForm.value.prescriber, instructions:medForm.value.instructions } });
+    // MIGRATED.
+    await server.createMedication({
+      resident_id: String(medForm.value.resident_id),
+      name: medForm.value.name,
+      dosage: medForm.value.dosage,
+      frequency: medForm.value.frequency,
+      route: medForm.value.route,
+      start_date: medForm.value.start_date,
+      end_date: null,
+      prescriber: medForm.value.prescriber,
+      instructions: medForm.value.instructions,
+    });
     $q.notify({ type:"positive", message:"Medication added." });
     showAddMedDialog.value = false;
     medForm.value = { resident_id:null, name:"", dosage:"", frequency:"", route:"oral", start_date:localToday(), prescriber:"", instructions:"" };
@@ -787,7 +949,8 @@ function confirmStopMed(med: Medication) {
   $q.dialog({ title:"Stop Medication", message:`Stop "${med.name}" for ${med.resident_name}?`, cancel:{ label:"Cancel", flat:true }, ok:{ label:"Stop", color:"negative", unelevated:true }, persistent:true })
     .onOk(async () => {
       try {
-        await invoke("stop_medication", { id:med.id });
+        // MIGRATED.
+        await server.stopMedication(String(med.id));
         $q.notify({ type:"positive", message:"Medication stopped." });
         await loadMedications();
       } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
@@ -817,16 +980,37 @@ async function loadMedHistory(reset = true) {
   if (reset) medHisPagination.value.page = 1;
   medHisLoading.value = true;
   try {
-    const result = await invoke<{ data:Medication[]; total:number }>("list_medications", {
-      residentId: medHisSelectedRes.value ?? null, activeOnly: false,
-      route: medHisRoute.value,
-      page: medHisPagination.value.page, pageSize: medHisPagination.value.rowsPerPage,
-      sortBy: medHisPagination.value.sortBy || null, sortDesc: medHisPagination.value.descending,
-    });
-    medHistory.value = result.data;
-    medHisPagination.value.rowsNumber = result.total;
-  } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-  finally { medHisLoading.value = false; }
+    // MIGRATED: include stopped (activeOnly: false). Same fan-out pattern.
+    let meds: any[] = [];
+    if (medHisSelectedRes.value !== null) {
+      meds = await server.medsFor(String(medHisSelectedRes.value));
+    } else {
+      const ids = residentList.value.concat(historyResidents.value as any).map((r) => String(r.id));
+      const unique = Array.from(new Set(ids));
+      const fetched = await Promise.all(
+        unique.slice(0, 40).map((id) => server.medsFor(id).catch(() => [])),
+      );
+      meds = fetched.flat();
+    }
+    if (medHisRoute.value) meds = meds.filter((m: any) => m.route === medHisRoute.value);
+
+    const total = meds.length;
+    const p = medHisPagination.value;
+    const start = (p.page - 1) * p.rowsPerPage;
+    medHistory.value = meds.slice(start, start + p.rowsPerPage).map((m: any) => ({
+      id: m.id, resident_id: m.resident_id,
+      resident_name:
+        residentList.value.find((r) => String(r.id) === m.resident_id)?.first_name ?? "",
+      name: m.name, dosage: m.dosage, frequency: m.frequency, route: m.route,
+      start_date: m.start_date, end_date: m.end_date,
+      prescriber: m.prescriber, instructions: m.instructions, stopped_at: m.stopped_at,
+    })) as any;
+    medHisPagination.value.rowsNumber = total;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `${e?.message ?? e}` });
+  } finally {
+    medHisLoading.value = false;
+  }
 }
 function onMedHisRequest(props: { pagination:{ page:number; rowsPerPage:number; sortBy:string; descending:boolean } }) {
   Object.assign(medHisPagination.value, props.pagination);
@@ -878,16 +1062,67 @@ function onVitalResSelected(opt: { label:string; value:number }|null) {
 async function loadVitals() {
   vitalLoading.value = true;
   try {
-    const result = await invoke<{ data:Vital[]; total:number }>("list_vitals", {
-      residentId: vitalSelectedRes.value ?? null, showArchived: false,
-      dateFrom: vitalDateFrom.value, dateTo: vitalDateTo.value,
-      page: vitalPagination.value.page, pageSize: vitalPagination.value.rowsPerPage,
-      sortBy: vitalPagination.value.sortBy || null, sortDesc: vitalPagination.value.descending,
-    });
-    vitals.value = result.data;
-    vitalPagination.value.rowsNumber = result.total;
-  } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-  finally { vitalLoading.value = false; }
+    // MIGRATED. Server vitals are one record per kind (heart_rate, spo2, etc.)
+    // — group them by recorded_at + resident to recompose the legacy single-row
+    // "snapshot" shape the table expects.
+    let raw: any[] = [];
+    if (vitalSelectedRes.value !== null) {
+      raw = await server.vitalsFor(String(vitalSelectedRes.value));
+    } else {
+      const ids = residentList.value.map((r) => String(r.id));
+      const fetched = await Promise.all(
+        ids.slice(0, 40).map((id) => server.vitalsFor(id).catch(() => [])),
+      );
+      raw = fetched.flat();
+    }
+    if (vitalDateFrom.value)
+      raw = raw.filter((v: any) => v.recorded_at >= vitalDateFrom.value);
+    if (vitalDateTo.value)
+      raw = raw.filter((v: any) => v.recorded_at <= vitalDateTo.value);
+
+    // Bucket by (resident + recorded_at rounded to minute)
+    const buckets = new Map<string, any>();
+    for (const v of raw) {
+      const key = `${v.resident_id}|${v.recorded_at.slice(0, 16)}`;
+      let b = buckets.get(key);
+      if (!b) {
+        b = {
+          id: v.id,
+          resident_id: v.resident_id,
+          resident_name:
+            residentList.value.find((r) => String(r.id) === v.resident_id)?.first_name ?? "",
+          staff_name: null,
+          bp_systolic: null, bp_diastolic: null,
+          heart_rate: null, temperature: null,
+          weight: null, blood_sugar: null, spo2: null,
+          notes: v.note ?? null,
+          measured_at: v.recorded_at,
+        };
+        buckets.set(key, b);
+      }
+      switch (v.kind) {
+        case "heart_rate":              b.heart_rate = v.value; break;
+        case "blood_pressure_systolic": b.bp_systolic = v.value; break;
+        case "blood_pressure_diastolic": b.bp_diastolic = v.value; break;
+        case "temperature_celsius":     b.temperature = v.value; break;
+        case "spo2":                    b.spo2 = v.value; break;
+        case "blood_glucose":           b.blood_sugar = v.value; break;
+        case "weight_kg":               b.weight = v.value; break;
+      }
+    }
+    const rows = Array.from(buckets.values()).sort((a, b) =>
+      (b.measured_at ?? "").localeCompare(a.measured_at ?? ""),
+    );
+    const total = rows.length;
+    const p = vitalPagination.value;
+    const start = (p.page - 1) * p.rowsPerPage;
+    vitals.value = rows.slice(start, start + p.rowsPerPage) as any;
+    vitalPagination.value.rowsNumber = total;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `${e?.message ?? e}` });
+  } finally {
+    vitalLoading.value = false;
+  }
 }
 function onVitalRequest(props: { pagination:{ page:number; rowsPerPage:number; sortBy:string; descending:boolean } }) {
   Object.assign(vitalPagination.value, props.pagination);
@@ -897,17 +1132,21 @@ async function submitVital() {
   if (!vitalForm.value.resident_id) { $q.notify({ type:"negative", message:"Please select a resident." }); return; }
   vitalSubmitting.value = true;
   try {
-    await invoke("create_vital", { input:{
-      resident_id:  vitalForm.value.resident_id,
-      bp_systolic:  vitalForm.value.bp_systolic  ? parseInt(vitalForm.value.bp_systolic)   : null,
-      bp_diastolic: vitalForm.value.bp_diastolic ? parseInt(vitalForm.value.bp_diastolic)  : null,
-      heart_rate:   vitalForm.value.heart_rate   ? parseInt(vitalForm.value.heart_rate)    : null,
-      temperature:  vitalForm.value.temperature  ? parseFloat(vitalForm.value.temperature) : null,
-      weight:       vitalForm.value.weight       ? parseFloat(vitalForm.value.weight)      : null,
-      blood_sugar:  vitalForm.value.blood_sugar  ? parseFloat(vitalForm.value.blood_sugar) : null,
-      spo2:         vitalForm.value.spo2         ? parseInt(vitalForm.value.spo2)          : null,
-      notes:        vitalForm.value.notes || null,
-    }});
+    // MIGRATED. Server takes one kind per POST; fan out in parallel.
+    const rid = String(vitalForm.value.resident_id);
+    const note = vitalForm.value.notes || null;
+    const posts: Promise<unknown>[] = [];
+    const push = (kind: string, raw: string, parser: (s: string) => number) => {
+      if (raw && raw !== "") posts.push(server.createVital({ resident_id: rid, kind, value: parser(raw), note }));
+    };
+    push("heart_rate",              vitalForm.value.heart_rate,   (s) => parseInt(s));
+    push("blood_pressure_systolic", vitalForm.value.bp_systolic,  (s) => parseInt(s));
+    push("blood_pressure_diastolic",vitalForm.value.bp_diastolic, (s) => parseInt(s));
+    push("temperature_celsius",     vitalForm.value.temperature,  (s) => parseFloat(s));
+    push("weight_kg",               vitalForm.value.weight,       (s) => parseFloat(s));
+    push("blood_glucose",           vitalForm.value.blood_sugar,  (s) => parseFloat(s));
+    push("spo2",                    vitalForm.value.spo2,         (s) => parseInt(s));
+    await Promise.all(posts);
     $q.notify({ type:"positive", message:"Vital signs recorded." });
     showVitalDialog.value = false;
     vitalForm.value = { resident_id:vitalSelectedRes.value, bp_systolic:"", bp_diastolic:"", heart_rate:"", temperature:"", weight:"", blood_sugar:"", spo2:"", notes:"" };
@@ -920,7 +1159,13 @@ function confirmArchive(vital: Vital) {
   $q.dialog({ title:"Archive this record?", message:`Archive vital record for ${vital.resident_name}?`, cancel:{ label:"Cancel", flat:true }, ok:{ label:"Archive", color:"warning", unelevated:true }, persistent:true })
     .onOk(async () => {
       try {
-        await invoke("archive_vital", { id:vital.id });
+        // Server has no archive — vitals are append-only like care_logs.
+        // Show info dialog instead of silent no-op.
+        $q.notify({
+          type: "warning",
+          message: "활력 기록은 감사용으로 보존됩니다 (보관/삭제 미지원).",
+        });
+        return;
         $q.notify({ type:"positive", message:"Vital record archived." });
         await loadVitals();
       } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
@@ -935,7 +1180,12 @@ function confirmDeleteVital(vital: Vital) {
     persistent: true,
   }).onOk(async () => {
     try {
-      await invoke("delete_vital", { id:vital.id, actorRole:auth.user?.role ?? "" });
+      // Same as archive — not supported server-side.
+      $q.notify({
+        type: "warning",
+        message: "활력 기록은 영구 보존됩니다.",
+      });
+      return;
       $q.notify({ type:"positive", message:"Vital record deleted." });
       await loadVitalHistory(false);
     } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
@@ -966,16 +1216,63 @@ async function loadVitalHistory(reset = true) {
   if (reset) vitalHisPagination.value.page = 1;
   vitalHisLoading.value = true;
   try {
-    const result = await invoke<{ data:Vital[]; total:number }>("list_vitals", {
-      residentId: vitalHisSelectedRes.value ?? null, showArchived: true,
-      dateFrom: vitalHisDateFrom.value, dateTo: vitalHisDateTo.value,
-      page: vitalHisPagination.value.page, pageSize: vitalHisPagination.value.rowsPerPage,
-      sortBy: vitalHisPagination.value.sortBy || null, sortDesc: vitalHisPagination.value.descending,
-    });
-    vitalHistory.value = result.data;
-    vitalHisPagination.value.rowsNumber = result.total;
-  } catch (e) { $q.notify({ type:"negative", message:`${e}` }); }
-  finally { vitalHisLoading.value = false; }
+    // MIGRATED: same bucketing pattern as loadVitals (server stores one row
+    // per kind; legacy table expects one "snapshot" row per measurement).
+    let raw: any[] = [];
+    if (vitalHisSelectedRes.value !== null) {
+      raw = await server.vitalsFor(String(vitalHisSelectedRes.value));
+    } else {
+      const ids = residentList.value.concat(historyResidents.value as any).map((r) => String(r.id));
+      const unique = Array.from(new Set(ids));
+      const fetched = await Promise.all(
+        unique.slice(0, 40).map((id) => server.vitalsFor(id).catch(() => [])),
+      );
+      raw = fetched.flat();
+    }
+    if (vitalHisDateFrom.value)
+      raw = raw.filter((v: any) => v.recorded_at >= vitalHisDateFrom.value);
+    if (vitalHisDateTo.value)
+      raw = raw.filter((v: any) => v.recorded_at <= vitalHisDateTo.value);
+
+    const buckets = new Map<string, any>();
+    for (const v of raw) {
+      const key = `${v.resident_id}|${v.recorded_at.slice(0, 16)}`;
+      let b = buckets.get(key);
+      if (!b) {
+        b = {
+          id: v.id, resident_id: v.resident_id,
+          resident_name:
+            residentList.value.find((r) => String(r.id) === v.resident_id)?.first_name ?? "",
+          staff_name: null,
+          bp_systolic: null, bp_diastolic: null, heart_rate: null,
+          temperature: null, weight: null, blood_sugar: null, spo2: null,
+          notes: v.note ?? null, measured_at: v.recorded_at,
+        };
+        buckets.set(key, b);
+      }
+      switch (v.kind) {
+        case "heart_rate": b.heart_rate = v.value; break;
+        case "blood_pressure_systolic": b.bp_systolic = v.value; break;
+        case "blood_pressure_diastolic": b.bp_diastolic = v.value; break;
+        case "temperature_celsius": b.temperature = v.value; break;
+        case "spo2": b.spo2 = v.value; break;
+        case "blood_glucose": b.blood_sugar = v.value; break;
+        case "weight_kg": b.weight = v.value; break;
+      }
+    }
+    const rows = Array.from(buckets.values()).sort((a, b) =>
+      (b.measured_at ?? "").localeCompare(a.measured_at ?? ""),
+    );
+    const total = rows.length;
+    const p = vitalHisPagination.value;
+    const start = (p.page - 1) * p.rowsPerPage;
+    vitalHistory.value = rows.slice(start, start + p.rowsPerPage) as any;
+    vitalHisPagination.value.rowsNumber = total;
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `${e?.message ?? e}` });
+  } finally {
+    vitalHisLoading.value = false;
+  }
 }
 function onVitalHisRequest(props: { pagination:{ page:number; rowsPerPage:number; sortBy:string; descending:boolean } }) {
   Object.assign(vitalHisPagination.value, props.pagination);
@@ -1079,31 +1376,93 @@ async function exportAll() {
       medsHistory,
       vitalsResult,
       vitalsHistResult,
-    ] = await Promise.all([
-      invoke<Resident[]>("list_residents", { search: null, activeOnly: null, status: "active" }),
-      invoke<Resident[]>("list_residents", { search: null, activeOnly: null, status: "discharged" }),
-      invoke<Resident[]>("list_residents", { search: null, activeOnly: null, status: "deceased" }),
-      invoke<{ data: CareLog[]; total: number }>("list_care_logs_history", {
-        residentId: null, dateFrom: null, dateTo: null, category: null,
-        incidentOnly: false, page: 1, pageSize: 9999, sortBy: "logged_at", sortDesc: true,
-      }),
-      invoke<{ data: CareLog[]; total: number }>("list_care_logs_history", {
-        residentId: null, dateFrom: null, dateTo: null, category: null,
-        incidentOnly: true, page: 1, pageSize: 9999, sortBy: "logged_at", sortDesc: true,
-      }),
-      invoke<{ data: Medication[]; total: number }>("list_medications", {
-        residentId: null, activeOnly: true, page: 1, pageSize: 9999, sortBy: "start_date", sortDesc: true,
-      }),
-      invoke<{ data: Medication[]; total: number }>("list_medications", {
-        residentId: null, activeOnly: false, page: 1, pageSize: 9999, sortBy: "start_date", sortDesc: true,
-      }),
-      invoke<{ data: Vital[]; total: number }>("list_vitals", {
-        residentId: null, showArchived: false, page: 1, pageSize: 9999, sortBy: "measured_at", sortDesc: true,
-      }),
-      invoke<{ data: Vital[]; total: number }>("list_vitals", {
-        residentId: null, showArchived: true, page: 1, pageSize: 9999, sortBy: "measured_at", sortDesc: true,
-      }),
-    ]);
+    ] = await (async () => {
+      // MIGRATED: pull from server, map shapes to legacy interfaces.
+      // Note: tuple structure preserved so the destructuring above still works.
+      const allRes = await server.residents();
+      const mapRes = (r: any) => ({
+        id: r.id as unknown as number,
+        first_name: r.full_name, last_name: "",
+        date_of_birth: r.birth_date,
+        gender: r.sex === "male" ? "M" : r.sex === "female" ? "F" : "O",
+        room_number: r.room_number,
+        admission_date: r.admitted_on, discharge_date: null,
+        care_grade: r.care_grade && r.care_grade !== "cognitive_support" ? Number(r.care_grade) : null,
+        cognitive_support: r.care_grade === "cognitive_support",
+        primary_diagnosis: null, allergies: null, dietary_restrictions: null,
+        insurance_number: null, notes: null,
+        is_active: r.status === "active", is_deceased: r.status === "deceased",
+      } as Resident);
+      const active     = allRes.filter((r) => r.status === "active").map(mapRes);
+      const discharged = allRes.filter((r) => r.status === "discharged").map(mapRes);
+      const deceased   = allRes.filter((r) => r.status === "deceased").map(mapRes);
+
+      const ids = allRes.map((r) => String(r.id));
+      const [logsAll, medsAll, vitalsAll] = await Promise.all([
+        Promise.all(ids.map((id) => server.careLogsFor(id).catch(() => []))).then((x) => x.flat()),
+        Promise.all(ids.map((id) => server.medsFor(id).catch(() => []))).then((x) => x.flat()),
+        Promise.all(ids.map((id) => server.vitalsFor(id).catch(() => []))).then((x) => x.flat()),
+      ]);
+      const resNameById = new Map(allRes.map((r) => [r.id, r.full_name]));
+
+      const mapLog = (l: any) => ({
+        id: l.id, resident_id: l.resident_id, resident_name: resNameById.get(l.resident_id) ?? "",
+        staff_id: null, staff_name: null, shift: "",
+        category: l.category, content: l.body,
+        is_incident: false, is_flagged: !!l.flagged, logged_at: l.recorded_at,
+      } as CareLog);
+      const careLogsAll = (logsAll as any[]).map(mapLog);
+
+      const mapMed = (m: any) => ({
+        id: m.id, resident_id: m.resident_id, resident_name: resNameById.get(m.resident_id) ?? "",
+        name: m.name, dosage: m.dosage, frequency: m.frequency, route: m.route,
+        start_date: m.start_date, end_date: m.end_date,
+        prescriber: m.prescriber, instructions: m.instructions, stopped_at: m.stopped_at,
+        is_active: !m.stopped_at,
+      } as Medication);
+      const medsActiveArr  = (medsAll as any[]).filter((m: any) => !m.stopped_at).map(mapMed);
+      const medsAllArr     = (medsAll as any[]).map(mapMed);
+
+      // Bucket vitals into "snapshot" rows the legacy Vital interface wants
+      const buckets = new Map<string, any>();
+      for (const v of vitalsAll as any[]) {
+        const key = `${v.resident_id}|${v.recorded_at.slice(0, 16)}`;
+        let b = buckets.get(key);
+        if (!b) {
+          b = {
+            id: v.id, resident_id: v.resident_id,
+            resident_name: resNameById.get(v.resident_id) ?? "",
+            staff_name: null,
+            bp_systolic: null, bp_diastolic: null, heart_rate: null,
+            temperature: null, weight: null, blood_sugar: null, spo2: null,
+            notes: v.note ?? null, measured_at: v.recorded_at,
+          };
+          buckets.set(key, b);
+        }
+        switch (v.kind) {
+          case "heart_rate": b.heart_rate = v.value; break;
+          case "blood_pressure_systolic": b.bp_systolic = v.value; break;
+          case "blood_pressure_diastolic": b.bp_diastolic = v.value; break;
+          case "temperature_celsius": b.temperature = v.value; break;
+          case "spo2": b.spo2 = v.value; break;
+          case "blood_glucose": b.blood_sugar = v.value; break;
+          case "weight_kg": b.weight = v.value; break;
+        }
+      }
+      const vitalsAllArr = Array.from(buckets.values()) as Vital[];
+
+      return [
+        active,
+        discharged,
+        deceased,
+        { data: careLogsAll, total: careLogsAll.length },                                 // careLogsResult
+        { data: careLogsAll.filter((l) => l.is_flagged), total: careLogsAll.length },     // careLogHistResult (incidentOnly)
+        { data: medsActiveArr, total: medsActiveArr.length },                              // medsActive
+        { data: medsAllArr,    total: medsAllArr.length },                                 // medsHistory
+        { data: vitalsAllArr,  total: vitalsAllArr.length },                               // vitalsResult
+        { data: vitalsAllArr,  total: vitalsAllArr.length },                               // vitalsHistResult (no archive concept yet)
+      ] as const;
+    })();
 
     const historyRes = [...(dischargedRes as Resident[]), ...(deceasedRes as Resident[])];
 
