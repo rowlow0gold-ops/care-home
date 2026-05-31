@@ -1,78 +1,93 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
-import { useAuthStore, type Role } from "@/stores/auth";
+import { useServerSessionStore } from "@/stores/server-session";
 
-const auth = useAuthStore();
+const session = useServerSessionStore();
 const router = useRouter();
 const miniMode = ref(false);
 
-// Role hierarchy: higher number = more access
-const roleLevel: Record<Role, number> = {
-  staff: 1,
-  manager: 2,
-  admin: 3,
-  
+// Server permission ladder (matches router/index.ts). Higher = more access.
+//   caregiver < nurse < branch_manager < hq < super_admin
+const roleLevel: Record<string, number> = {
+  caregiver: 1,
+  nurse: 2,
+  branch_manager: 3,
+  hq: 4,
+  super_admin: 5,
+};
+
+// Korean display label per server role.
+const roleLabel: Record<string, string> = {
+  caregiver: "요양보호사",
+  nurse: "간호사",
+  branch_manager: "센터장",
+  hq: "본사",
+  super_admin: "최고관리자",
 };
 
 interface NavItem { to: string; icon: string; label: string; minRole: number; }
-interface NavGroup { heading: string; minRole: number; items: NavItem[]; }
+interface NavGroup { heading: string; items: NavItem[]; }
 
+// minRole values mirror router/index.ts so shell + routes never disagree.
 const navGroups: NavGroup[] = [
   {
-    heading: "", minRole: 1,
+    heading: "",
     items: [
-      { to: "/residents", icon: "o_people", label: "Residents", minRole: 1 },
+      { to: "/residents", icon: "o_people", label: "어르신", minRole: 1 },
     ],
   },
   {
-    heading: "Staff", minRole: 1,
+    heading: "직원",
     items: [
-      { to: "/staff",     icon: "o_badge",          label: "Staff",     minRole: 2 },
-      { to: "/schedule",  icon: "o_calendar_month", label: "Schedule",  minRole: 1 },
-      { to: "/leave",     icon: "o_event_busy",     label: "휴가 신청", minRole: 1 },
+      { to: "/staff",    icon: "o_badge",          label: "직원",      minRole: 3 },
+      { to: "/schedule", icon: "o_calendar_month", label: "근무일정",  minRole: 1 },
+      { to: "/leave",    icon: "o_event_busy",     label: "휴가 신청", minRole: 1 },
     ],
   },
   {
-    heading: "Service", minRole: 1,
+    heading: "서비스",
     items: [
-      { to: "/media",         icon: "o_photo_camera",  label: "사진 승인",     minRole: 1 },
-      { to: "/notifications", icon: "o_mail",          label: "Notifications", minRole: 2 },
-      { to: "/reports",       icon: "o_description",   label: "Reports",       minRole: 2 },
+      { to: "/media",         icon: "o_photo_camera", label: "사진 승인", minRole: 1 },
+      { to: "/notifications", icon: "o_mail",         label: "알림",      minRole: 3 },
+      { to: "/reports",       icon: "o_description",  label: "보고서",    minRole: 3 },
+      { to: "/meals",         icon: "o_restaurant",   label: "식단",      minRole: 1 },
     ],
   },
   {
-    heading: "", minRole: 1,
+    heading: "관리",
     items: [
-      { to: "/meals", icon: "o_restaurant", label: "Meal Planning", minRole: 1 },
+      { to: "/accounting", icon: "o_account_balance",   label: "정산",   minRole: 4 },
+      { to: "/settings",   icon: "o_settings",          label: "설정",   minRole: 3 },
     ],
   },
   {
-    heading: "Admin", minRole: 3,
+    heading: "",
     items: [
-      { to: "/accounting", icon: "o_account_balance",   label: "Accounting", minRole: 3 },
-      { to: "/insurance",  icon: "o_health_and_safety", label: "Insurance",  minRole: 3 },
-      { to: "/settings",   icon: "o_settings",          label: "Settings",   minRole: 2 },
-    ],
-  },
-  {
-    heading: "", minRole: 1,
-    items: [
-      { to: "/help", icon: "o_help", label: "Help", minRole: 1 },
+      { to: "/help", icon: "o_help", label: "도움말", minRole: 1 },
     ],
   },
 ];
 
-const visibleGroups = computed(() => {
-  const level = roleLevel[auth.user?.role as Role] ?? 0;
-  return navGroups
-    .map(g => ({ ...g, items: g.items.filter(i => level >= i.minRole) }))
-    .filter(g => g.items.length > 0);
-});
+const myLevel = computed(() => roleLevel[session.me?.role ?? ""] ?? 0);
 
-function handleLogout() {
-  auth.logout();
-  router.push("/login");
+const visibleGroups = computed(() =>
+  navGroups
+    .map((g) => ({ ...g, items: g.items.filter((i) => myLevel.value >= i.minRole) }))
+    .filter((g) => g.items.length > 0),
+);
+
+// Header shows where the operator is signed in: branch (hub) name, else tenant.
+const stationName = computed(
+  () => session.branchName ?? session.tenantName ?? "케어닥",
+);
+const myRoleLabel = computed(
+  () => roleLabel[session.me?.role ?? ""] ?? session.me?.role ?? "",
+);
+
+async function handleLogout() {
+  await session.logout();
+  router.replace({ name: "login" });
 }
 </script>
 
@@ -81,15 +96,9 @@ function handleLogout() {
     <!-- Header -->
     <q-header elevated class="bg-primary">
       <q-toolbar>
-        <q-btn
-          flat
-          round
-          dense
-          icon="o_menu"
-          @click="miniMode = !miniMode"
-        />
+        <q-btn flat round dense icon="o_menu" @click="miniMode = !miniMode" />
         <q-toolbar-title class="text-weight-medium">
-          Sunshine Care Home
+          케어닥 — {{ stationName }}
         </q-toolbar-title>
         <q-chip
           square
@@ -98,10 +107,10 @@ function handleLogout() {
           size="sm"
           class="q-mr-sm"
         >
-          {{ auth.user?.role?.toUpperCase() }}
+          {{ myRoleLabel }}
         </q-chip>
         <q-btn flat round dense icon="o_logout" @click="handleLogout">
-          <q-tooltip>Logout</q-tooltip>
+          <q-tooltip>로그아웃</q-tooltip>
         </q-btn>
       </q-toolbar>
     </q-header>
@@ -116,25 +125,26 @@ function handleLogout() {
     >
       <!-- User info -->
       <div v-if="!miniMode" class="q-pa-md sidebar-user">
-        <div class="text-weight-semibold text-white">{{ auth.user?.full_name }}</div>
-        <div class="text-caption sidebar-sub">{{ auth.user?.username }}</div>
+        <div class="text-weight-semibold text-white">{{ session.me?.name }}</div>
+        <div class="text-caption sidebar-sub">{{ session.me?.email }}</div>
       </div>
       <q-separator dark v-if="!miniMode" />
 
       <q-list padding>
         <template v-for="(group, gi) in visibleGroups" :key="gi">
-          <!-- Group separator (not before the first group) -->
           <q-separator v-if="gi > 0" dark spaced="sm" class="q-mx-md" />
-          <!-- Group heading -->
-          <q-item-label v-if="group.heading && !miniMode"
-                        header class="sidebar-group-label">
+          <q-item-label
+            v-if="group.heading && !miniMode"
+            header
+            class="sidebar-group-label"
+          >
             {{ group.heading }}
           </q-item-label>
-          <!-- Items -->
           <q-item
             v-for="item in group.items"
             :key="item.to"
-            clickable v-ripple
+            clickable
+            v-ripple
             :to="item.to"
             active-class="sidebar-active"
             class="sidebar-item"
@@ -174,7 +184,7 @@ function handleLogout() {
 }
 .sidebar-item:hover {
   color: #fff;
-  background: rgba(255,255,255,0.08);
+  background: rgba(255, 255, 255, 0.08);
 }
 .sidebar-active {
   color: #14b8a6 !important;

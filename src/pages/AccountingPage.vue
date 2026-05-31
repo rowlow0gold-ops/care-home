@@ -1,81 +1,106 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useQuasar } from "quasar";
+import { server, type BillingRun } from "@/lib/server";
 
 const $q = useQuasar();
 
-interface Invoice {
-  id: number; invoice_number: string; resident_name: string;
-  billing_period: string; base_fee: number; extra_charges: number;
-  total_amount: number; status: string; due_date: string | null; issued_at: string;
-}
-interface Expense {
-  id: number; category: string; description: string;
-  amount: number; vendor: string | null; expense_date: string;
-}
-interface Summary {
-  total_invoiced: number; total_collected: number;
-  total_outstanding: number; total_expenses: number;
-}
-
-const tab = ref("invoices");
-const invoices = ref<Invoice[]>([]);
-const expenses = ref<Expense[]>([]);
-const summary = ref<Summary>({ total_invoiced: 0, total_collected: 0, total_outstanding: 0, total_expenses: 0 });
+const runs = ref<BillingRun[]>([]);
 const loading = ref(false);
+const running = ref(false);
+const downloading = ref<string | null>(null);
 
-function cad(v: number) {
-  return "CA$" + v.toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Month to close. Defaults to last month (typical month-end close).
+function lastMonth(): string {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+const targetMonth = ref(lastMonth());
+
+function won(v: number | null): string {
+  if (v == null) return "—";
+  return "₩" + v.toLocaleString("ko-KR");
 }
 
-function statusColor(s: string) {
-  return s === "paid" ? "positive" : s === "unpaid" ? "negative" : s === "partial" ? "warning" : "grey";
-}
-
-const invoiceColumns = [
-  { name: "invoice_number", label: "Invoice #",      field: "invoice_number",  align: "left"   as const },
-  { name: "resident_name",  label: "Resident",        field: "resident_name",   align: "left"   as const },
-  { name: "billing_period", label: "Period",          field: "billing_period",  align: "left"   as const },
-  { name: "total_amount",   label: "Amount",          field: "total_amount",    align: "right"  as const },
-  { name: "due_date",       label: "Due Date",        field: "due_date",        align: "left"   as const },
-  { name: "status",         label: "Status",          field: "status",          align: "center" as const },
-];
-
-const expenseColumns = [
-  { name: "expense_date", label: "Date",        field: "expense_date", align: "left"  as const },
-  { name: "category",     label: "Category",    field: "category",     align: "left"  as const },
-  { name: "description",  label: "Description", field: "description",  align: "left"  as const },
-  { name: "amount",       label: "Amount",      field: "amount",       align: "right" as const },
-  { name: "vendor",       label: "Vendor",      field: "vendor",       align: "left"  as const },
-];
-
-const categoryColors: Record<string, string> = {
-  "Medical Supplies": "blue",
-  "Food & Catering":  "green",
-  "Maintenance":      "orange",
-  "Utilities":        "purple",
-  "Equipment":        "teal",
-  "Medications":      "pink",
-  "Cleaning":         "cyan",
-  "Administrative":   "grey",
+const STATUS_META: Record<string, { label: string; color: string }> = {
+  queued: { label: "대기", color: "grey" },
+  running: { label: "진행중", color: "blue" },
+  completed: { label: "완료", color: "positive" },
+  failed: { label: "실패", color: "negative" },
 };
+function statusMeta(s: string) {
+  return STATUS_META[s] ?? { label: s, color: "grey" };
+}
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("ko-KR", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+const columns = [
+  { name: "year_month", label: "정산월", field: "year_month", align: "left" as const },
+  { name: "status", label: "상태", field: "status", align: "center" as const },
+  { name: "resident_count", label: "어르신 수", field: "resident_count", align: "right" as const },
+  { name: "total_amount", label: "총액", field: "total_amount", align: "right" as const },
+  { name: "triggered_at", label: "실행시각", field: "triggered_at", align: "left" as const },
+  { name: "completed_at", label: "완료시각", field: "completed_at", align: "left" as const },
+  { name: "actions", label: "명세서", field: "actions", align: "center" as const },
+];
+
+const totalClosed = computed(() =>
+  runs.value
+    .filter((r) => r.status === "completed")
+    .reduce((sum, r) => sum + (r.total_amount ?? 0), 0),
+);
 
 async function load() {
   loading.value = true;
   try {
-    const [inv, exp, sum] = await Promise.all([
-      invoke<Invoice[]>("list_invoices", { status: null }),
-      invoke<Expense[]>("list_expenses"),
-      invoke<Summary>("get_accounting_summary"),
-    ]);
-    invoices.value = inv;
-    expenses.value = exp;
-    summary.value = sum;
+    runs.value = await server.billingRuns();
   } catch (e: any) {
-    $q.notify({ type: "negative", message: e });
+    $q.notify({ type: "negative", message: `정산 내역을 불러오지 못했습니다: ${e?.message ?? e}` });
   } finally {
     loading.value = false;
+  }
+}
+
+async function runClose() {
+  if (!/^\d{4}-\d{2}$/.test(targetMonth.value)) {
+    $q.notify({ type: "negative", message: "정산월 형식은 YYYY-MM 입니다." });
+    return;
+  }
+  running.value = true;
+  try {
+    await server.runBilling({ year_month: targetMonth.value });
+    $q.notify({ type: "positive", message: `${targetMonth.value} 정산 마감을 시작했습니다.` });
+    // worker processes asynchronously — reload to reflect queued/running state
+    await load();
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `정산 실행 실패: ${e?.message ?? e}` });
+  } finally {
+    running.value = false;
+  }
+}
+
+async function download(r: BillingRun) {
+  downloading.value = r.id;
+  try {
+    const bytes = await server.billingXlsx(r.id);
+    const saved = await invoke<string | null>("save_excel", {
+      filename: `정산_${r.year_month}.xlsx`,
+      data: Array.from(bytes),
+    });
+    if (saved) $q.notify({ type: "positive", message: "명세서를 저장했습니다." });
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `다운로드 실패: ${e?.message ?? e}` });
+  } finally {
+    downloading.value = null;
   }
 }
 
@@ -84,109 +109,101 @@ onMounted(load);
 
 <template>
   <q-page class="q-pa-lg">
-    <div class="row items-center q-mb-lg">
+    <!-- Header -->
+    <div class="row items-center q-mb-md q-gutter-sm">
       <div class="col">
-        <div class="text-h5 text-weight-bold">Accounting</div>
-        <div class="text-caption text-grey-6">Invoices · Expenses · Payroll</div>
+        <div class="text-h5 text-weight-bold">정산</div>
+        <div class="text-caption text-grey-6">월별 정산 마감 및 명세서</div>
       </div>
       <div class="col-auto">
-        <q-btn flat icon="o_refresh" dense @click="load" />
+        <q-input
+          v-model="targetMonth"
+          label="정산월"
+          mask="####-##"
+          outlined
+          dense
+          style="width: 130px"
+        />
+      </div>
+      <div class="col-auto">
+        <q-btn
+          color="primary"
+          icon="o_play_arrow"
+          label="정산 마감 실행"
+          unelevated
+          :loading="running"
+          @click="runClose"
+        />
       </div>
     </div>
 
-    <!-- Summary cards -->
-    <div class="row q-gutter-md q-mb-lg">
-      <div class="col-12 col-sm-6 col-md-2" style="min-width:200px">
-        <q-card flat bordered>
-          <q-card-section class="q-pa-md">
-            <div class="row items-center q-mb-xs">
-              <q-icon name="o_receipt_long" color="blue" size="1.3rem" class="q-mr-sm" />
-              <span class="text-caption text-grey-6">Total Invoiced</span>
-            </div>
-            <div class="text-h6 text-weight-bold">{{ cad(summary.total_invoiced) }}</div>
-          </q-card-section>
-        </q-card>
-      </div>
-      <div class="col-12 col-sm-6 col-md-2" style="min-width:200px">
-        <q-card flat bordered>
-          <q-card-section class="q-pa-md">
-            <div class="row items-center q-mb-xs">
-              <q-icon name="o_payments" color="positive" size="1.3rem" class="q-mr-sm" />
-              <span class="text-caption text-grey-6">Collected</span>
-            </div>
-            <div class="text-h6 text-weight-bold text-positive">{{ cad(summary.total_collected) }}</div>
-          </q-card-section>
-        </q-card>
-      </div>
-      <div class="col-12 col-sm-6 col-md-2" style="min-width:200px">
-        <q-card flat bordered>
-          <q-card-section class="q-pa-md">
-            <div class="row items-center q-mb-xs">
-              <q-icon name="o_pending_actions" color="warning" size="1.3rem" class="q-mr-sm" />
-              <span class="text-caption text-grey-6">Outstanding</span>
-            </div>
-            <div class="text-h6 text-weight-bold text-warning">{{ cad(summary.total_outstanding) }}</div>
-          </q-card-section>
-        </q-card>
-      </div>
-      <div class="col-12 col-sm-6 col-md-2" style="min-width:200px">
-        <q-card flat bordered>
-          <q-card-section class="q-pa-md">
-            <div class="row items-center q-mb-xs">
-              <q-icon name="o_money_off" color="negative" size="1.3rem" class="q-mr-sm" />
-              <span class="text-caption text-grey-6">Total Expenses</span>
-            </div>
-            <div class="text-h6 text-weight-bold text-negative">{{ cad(summary.total_expenses) }}</div>
-          </q-card-section>
-        </q-card>
-      </div>
-    </div>
-
-    <!-- Tabs -->
-    <q-tabs v-model="tab" align="left" class="q-mb-md" dense>
-      <q-tab name="invoices" icon="o_receipt_long" label="Invoices" />
-      <q-tab name="expenses" icon="o_money_off"    label="Expenses" />
-      <q-tab name="payroll"  icon="o_payments"     label="Payroll" />
-    </q-tabs>
-
-    <q-tab-panels v-model="tab" animated>
-      <!-- Invoices -->
-      <q-tab-panel name="invoices" class="q-pa-none">
-        <q-table :rows="invoices" :columns="invoiceColumns" row-key="id"
-                 flat bordered :loading="loading" :rows-per-page-options="[15,30,50]">
-          <template #body-cell-total_amount="{ row }">
-            <q-td class="text-right text-weight-medium">{{ cad(row.total_amount) }}</q-td>
-          </template>
-          <template #body-cell-status="{ row }">
-            <q-td class="text-center">
-              <q-badge :color="statusColor(row.status)" :label="row.status" class="text-capitalize" />
-            </q-td>
-          </template>
-        </q-table>
-      </q-tab-panel>
-
-      <!-- Expenses -->
-      <q-tab-panel name="expenses" class="q-pa-none">
-        <q-table :rows="expenses" :columns="expenseColumns" row-key="id"
-                 flat bordered :loading="loading" :rows-per-page-options="[15,30,50]">
-          <template #body-cell-category="{ row }">
-            <q-td>
-              <q-badge :color="categoryColors[row.category] || 'grey'" :label="row.category" />
-            </q-td>
-          </template>
-          <template #body-cell-amount="{ row }">
-            <q-td class="text-right text-weight-medium">{{ cad(row.amount) }}</q-td>
-          </template>
-        </q-table>
-      </q-tab-panel>
-
-      <!-- Payroll -->
-      <q-tab-panel name="payroll" class="q-pa-none">
-        <div class="column flex-center q-py-xl">
-          <q-icon name="o_payments" size="3rem" color="grey-4" />
-          <div class="text-grey-5 q-mt-sm">Payroll management coming in next update</div>
+    <!-- Summary -->
+    <q-card flat bordered class="q-mb-md">
+      <q-card-section class="row items-center">
+        <div class="col">
+          <div class="text-caption text-grey-6">완료된 정산 합계</div>
+          <div class="text-h6 text-weight-bold">{{ won(totalClosed) }}</div>
         </div>
-      </q-tab-panel>
-    </q-tab-panels>
+        <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load">
+          <q-tooltip>새로고침</q-tooltip>
+        </q-btn>
+      </q-card-section>
+    </q-card>
+
+    <!-- Skeleton -->
+    <template v-if="loading">
+      <q-skeleton type="rect" height="40px" class="q-mb-sm" />
+      <q-skeleton type="rect" height="44px" class="q-mb-sm" v-for="n in 5" :key="n" />
+    </template>
+
+    <!-- Table -->
+    <q-table
+      v-else
+      :rows="runs"
+      :columns="columns"
+      row-key="id"
+      flat
+      bordered
+      :rows-per-page-options="[12, 24, 50]"
+    >
+      <template #body-cell-status="props">
+        <q-td :props="props" class="text-center">
+          <q-badge :color="statusMeta(props.row.status).color" :label="statusMeta(props.row.status).label" />
+          <q-tooltip v-if="props.row.failure_reason">{{ props.row.failure_reason }}</q-tooltip>
+        </q-td>
+      </template>
+      <template #body-cell-resident_count="props">
+        <q-td :props="props">{{ props.row.resident_count ?? "—" }}</q-td>
+      </template>
+      <template #body-cell-total_amount="props">
+        <q-td :props="props">{{ won(props.row.total_amount) }}</q-td>
+      </template>
+      <template #body-cell-triggered_at="props">
+        <q-td :props="props">{{ fmtTime(props.row.triggered_at) }}</q-td>
+      </template>
+      <template #body-cell-completed_at="props">
+        <q-td :props="props">{{ fmtTime(props.row.completed_at) }}</q-td>
+      </template>
+      <template #body-cell-actions="props">
+        <q-td :props="props" class="text-center">
+          <q-btn
+            v-if="props.row.has_xlsx"
+            flat round dense icon="o_download" color="primary"
+            :loading="downloading === props.row.id"
+            @click="download(props.row)"
+          >
+            <q-tooltip>명세서 다운로드</q-tooltip>
+          </q-btn>
+          <span v-else class="text-caption text-grey-4">—</span>
+        </q-td>
+      </template>
+      <template #no-data>
+        <div class="full-width column flex-center q-py-xl">
+          <q-icon name="o_account_balance" size="3rem" color="grey-4" />
+          <div class="text-grey-5 q-mt-sm">정산 내역이 없습니다</div>
+          <div class="text-grey-4 text-caption">위에서 정산월을 선택해 마감을 실행하세요</div>
+        </div>
+      </template>
+    </q-table>
   </q-page>
 </template>

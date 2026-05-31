@@ -1,54 +1,22 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { useQuasar } from "quasar";
-import { useAuthStore } from "@/stores/auth";
+import { server } from "@/lib/server";
+import { useServerSessionStore } from "@/stores/server-session";
 
-const $q   = useQuasar();
-const auth = useAuthStore();
+const $q = useQuasar();
+const session = useServerSessionStore();
 
-// ── Role helpers ──────────────────────────────────────────────────────────────
-const isManager = computed(() => auth.user?.role === "manager" || auth.user?.role === "admin")
-const isStaff   = computed(() => auth.user?.role === "staff")
-
-// ── Team types & state ────────────────────────────────────────────────────────
-interface TeamMember { user_id: number; full_name: string; position: string | null }
-interface Team { id: number; name: string; color: string; manager_id: number | null; manager_name: string | null; staff: TeamMember[] }
-
-const allTeams       = ref<Team[]>([])
-const myTeam         = ref<Team | null>(null)
-const selectedTeamId = ref<number | null>(null)   // null = All Teams (admin/manager only)
-
-const teamOptions = computed(() => [
-  { label: "All Teams", value: null },
-  ...allTeams.value.map(t => ({ label: t.name, value: t.id, color: t.color })),
-])
-
-async function loadTeams() {
-  try {
-    allTeams.value = await invoke<Team[]>("list_teams")
-    const me = await invoke<Team | null>("get_user_team", { userId: auth.user!.id })
-    myTeam.value = me
-    if (isStaff.value) {
-      // Staff: locked to their own team
-      selectedTeamId.value = me?.id ?? null
-    } else if (auth.user?.role === "manager") {
-      // Manager: default to their own team, but can switch
-      selectedTeamId.value = me?.id ?? null
-    } else {
-      // Admin: default to all
-      selectedTeamId.value = null
-    }
-  } catch (_) {}
-};
+// ── Role helpers (server permission ladder) ─────────────────────────────────
+const isManager = computed(() => session.hasRole("branch_manager"));
 
 // ── View mode ─────────────────────────────────────────────────────────────────
 const viewMode = ref<"week" | "month">("week");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface ScheduleEntry {
-  id:          number;
-  staff_id:    number;
+  id:          string;
+  staff_id:    string;
   staff_name:  string;
   shift_date:  string;
   shift_start: string;
@@ -56,7 +24,7 @@ interface ScheduleEntry {
   shift_hours: number;
   notes:       string | null;
 }
-interface StaffOption { label: string; value: number; role: string }
+interface StaffOption { label: string; value: string; role: string }
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function localDateStr(d: Date): string {
@@ -76,7 +44,7 @@ function addDays(d: Date, n: number): Date {
   c.setDate(c.getDate() + n);
   return c;
 }
-const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
 const todayStr   = computed(() => localDateStr(new Date()));
 function isToday(d: Date) { return localDateStr(d) === todayStr.value; }
 
@@ -90,7 +58,7 @@ const weekEndStr   = computed(() => localDateStr(weekDates.value[6]));
 
 function weekLabel(): string {
   const s = weekDates.value[0], e = weekDates.value[6];
-  const fmt = (d: Date) => d.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+  const fmt = (d: Date) => d.toLocaleDateString("ko-KR", { month: "short", day: "numeric" });
   return `${fmt(s)} – ${fmt(e)}, ${e.getFullYear()}`;
 }
 function prevWeek() { currentMonday.value = addDays(currentMonday.value, -7); }
@@ -112,7 +80,7 @@ function nextMonth() {
   currentMonth.value = new Date(d.getFullYear(), d.getMonth() + 1, 1);
 }
 function monthLabel(): string {
-  return currentMonth.value.toLocaleDateString("en-CA", { month: "long", year: "numeric" });
+  return currentMonth.value.toLocaleDateString("ko-KR", { month: "long", year: "numeric" });
 }
 const monthStartStr = computed(() => localDateStr(currentMonth.value));
 const monthEndStr   = computed(() => {
@@ -131,10 +99,7 @@ const monthGrid = computed<Date[][]>(() => {
   const firstDay = new Date(year, month, 1);
   const lastDay  = new Date(year, month + 1, 0);
 
-  // Grid start = Monday of week containing the 1st
   const gridStart = weekMonday(firstDay);
-
-  // Grid end = Sunday of week containing the last day
   const lastDow   = lastDay.getDay(); // 0=Sun … 6=Sat
   const gridEnd   = addDays(lastDay, lastDow === 0 ? 0 : 7 - lastDow);
 
@@ -158,36 +123,13 @@ const loading   = ref(false);
 const staffList = ref<StaffOption[]>([]);
 
 const staffRows = computed<StaffOption[]>(() => {
-  const base = staffList.value.length > 0
-    ? staffList.value
-    : (() => {
-        const seen = new Map<number, string>();
-        for (const e of entries.value) seen.set(e.staff_id, e.staff_name);
-        return Array.from(seen.entries())
-          .sort((a, b) => a[1].localeCompare(b[1]))
-          .map(([value, label]) => ({ label, value, role: "staff" }));
-      })();
-
-  // When a specific team is selected, only show members of that team, manager first
-  if (selectedTeamId.value !== null) {
-    const team = allTeams.value.find(t => t.id === selectedTeamId.value);
-    if (team) {
-      const memberIds = new Set<number>([
-        ...(team.manager_id ? [team.manager_id] : []),
-        ...team.staff.map(s => s.user_id),
-      ]);
-      const filtered = base.filter(s => memberIds.has(s.value));
-      // Sort: manager first, then alphabetically
-      return filtered.sort((a, b) => {
-        const aIsManager = a.value === team.manager_id;
-        const bIsManager = b.value === team.manager_id;
-        if (aIsManager && !bIsManager) return -1;
-        if (!aIsManager && bIsManager) return 1;
-        return a.label.localeCompare(b.label);
-      });
-    }
-  }
-  return base;
+  if (staffList.value.length > 0) return staffList.value;
+  // Fallback: derive roster rows from the entries themselves.
+  const seen = new Map<string, string>();
+  for (const e of entries.value) seen.set(e.staff_id, e.staff_name);
+  return Array.from(seen.entries())
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([value, label]) => ({ label, value, role: "caregiver" }));
 });
 
 const cellMap = computed(() => {
@@ -199,7 +141,7 @@ const cellMap = computed(() => {
   }
   return map;
 });
-function cellEntries(staffId: number, date: Date): ScheduleEntry[] {
+function cellEntries(staffId: string, date: Date): ScheduleEntry[] {
   return cellMap.value.get(`${staffId}-${localDateStr(date)}`) ?? [];
 }
 
@@ -224,7 +166,7 @@ function shiftColor(e: ScheduleEntry): string {
   if (e.shift_start === "15:00") return "deep-orange";
   return "purple";
 }
-function weekHours(staffId: number): number {
+function weekHours(staffId: string): number {
   return entries.value
     .filter(e => e.staff_id === staffId)
     .reduce((sum, e) => sum + e.shift_hours, 0);
@@ -236,48 +178,53 @@ async function loadSchedule() {
   try {
     const start = viewMode.value === "week" ? weekStartStr.value : monthStartStr.value;
     const end   = viewMode.value === "week" ? weekEndStr.value   : monthEndStr.value;
-    entries.value = await invoke<ScheduleEntry[]>("list_schedules", {
-      staffId: null, teamId: selectedTeamId.value, weekStart: start, weekEnd: end,
-    });
-  } catch (e) {
-    $q.notify({ type: "negative", message: `Failed to load schedule: ${e}` });
+    const rows = await server.roster(start, end);
+    entries.value = rows.map(r => ({
+      id:          r.id,
+      staff_id:    r.user_id,
+      staff_name:  r.staff_name,
+      shift_date:  r.shift_date,
+      shift_start: r.shift_start,
+      shift_end:   r.shift_end,
+      shift_hours: r.shift_hours,
+      notes:       r.notes,
+    }));
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `근무일정을 불러오지 못했습니다: ${e?.message ?? e}` });
   } finally {
     loading.value = false;
   }
 }
 async function loadStaffList() {
   try {
-    interface UserRow { id: number; full_name: string; role: string }
-    const users = await invoke<UserRow[]>("list_users");
+    const users = await server.staff();
     staffList.value = users
-      .filter(u => u.role === "staff" || u.role === "manager")
+      .filter(u => !u.deactivated_at && ["caregiver", "nurse", "branch_manager"].includes(u.role))
       .map(u => ({ label: u.full_name, value: u.id, role: u.role }))
       .sort((a, b) => a.label.localeCompare(b.label));
   } catch (_) { /* best effort */ }
 }
 
-// Reload schedule whenever team filter changes
-watch(selectedTeamId, loadSchedule);
 watch(viewMode, loadSchedule);
 watch([weekStartStr, weekEndStr], () => { if (viewMode.value === "week")   loadSchedule(); });
 watch([monthStartStr, monthEndStr], () => { if (viewMode.value === "month") loadSchedule(); });
-onMounted(async () => { await loadTeams(); await loadStaffList(); await loadSchedule(); });
+onMounted(async () => { await loadStaffList(); await loadSchedule(); });
 
 // ── Shift presets ─────────────────────────────────────────────────────────────
 const SHIFT_PRESETS = [
-  { label: "Day 12h (07:00–19:00)",      start: "07:00", end: "19:00", hours: 12 },
-  { label: "Night 12h (19:00–07:00)",    start: "19:00", end: "07:00", hours: 12 },
-  { label: "Morning 8h (07:00–15:00)",   start: "07:00", end: "15:00", hours:  8 },
-  { label: "Afternoon 8h (15:00–23:00)", start: "15:00", end: "23:00", hours:  8 },
-  { label: "Night 8h (23:00–07:00)",     start: "23:00", end: "07:00", hours:  8 },
-  { label: "Custom",                      start: "",      end: "",      hours:  0 },
+  { label: "주간 12h (07:00–19:00)",   start: "07:00", end: "19:00", hours: 12 },
+  { label: "야간 12h (19:00–07:00)",   start: "19:00", end: "07:00", hours: 12 },
+  { label: "오전 8h (07:00–15:00)",    start: "07:00", end: "15:00", hours:  8 },
+  { label: "오후 8h (15:00–23:00)",    start: "15:00", end: "23:00", hours:  8 },
+  { label: "야간 8h (23:00–07:00)",    start: "23:00", end: "07:00", hours:  8 },
+  { label: "직접입력",                 start: "",      end: "",      hours:  0 },
 ];
 
 // ── Add shift (cell hover button) ─────────────────────────────────────────────
 const showAdd    = ref(false);
 const submitting = ref(false);
 const form = ref({
-  staff_id:    null as number | null,
+  staff_id:    null as string | null,
   shift_date:  "",
   preset:      SHIFT_PRESETS[0],
   shift_start: "07:00",
@@ -286,26 +233,13 @@ const form = ref({
   notes:       "",
 });
 function applyPreset() {
-  if (form.value.preset.label !== "Custom") {
+  if (form.value.preset.label !== "직접입력") {
     form.value.shift_start = form.value.preset.start;
     form.value.shift_end   = form.value.preset.end;
     form.value.shift_hours = form.value.preset.hours;
   }
 }
-function openCustom() {
-  const customPreset = SHIFT_PRESETS.find(p => p.label === "Custom")!;
-  form.value = {
-    staff_id:    null,
-    shift_date:  localDateStr(new Date()),
-    preset:      customPreset,
-    shift_start: "",
-    shift_end:   "",
-    shift_hours: 0,
-    notes:       "",
-  };
-  showAdd.value = true;
-}
-function openAddForCell(staffId: number, date: Date) {
+function openAddForCell(staffId: string, date: Date) {
   form.value = {
     staff_id:    staffId,
     shift_date:  localDateStr(date),
@@ -319,28 +253,24 @@ function openAddForCell(staffId: number, date: Date) {
 }
 async function submitAdd() {
   if (!form.value.staff_id || !form.value.shift_date) {
-    $q.notify({ type: "negative", message: "Staff member and date are required." });
+    $q.notify({ type: "negative", message: "직원과 날짜를 선택하세요." });
     return;
   }
   submitting.value = true;
   try {
-    await invoke("create_schedule", {
-      input: {
-        staff_id:    form.value.staff_id,
-        shift_date:  form.value.shift_date,
-        shift_start: form.value.shift_start,
-        shift_end:   form.value.shift_end,
-        shift_hours: form.value.shift_hours,
-        notes:       form.value.notes || null,
-      },
-      actorRole: auth.user?.role,
-      actorId:   auth.user?.id,
+    await server.createRoster({
+      user_id:     form.value.staff_id,
+      shift_date:  form.value.shift_date,
+      shift_start: form.value.shift_start,
+      shift_end:   form.value.shift_end,
+      shift_hours: form.value.shift_hours,
+      notes:       form.value.notes || null,
     });
-    $q.notify({ type: "positive", message: "Shift added." });
+    $q.notify({ type: "positive", message: "근무가 추가되었습니다." });
     showAdd.value = false;
     await loadSchedule();
-  } catch (e) {
-    $q.notify({ type: "negative", message: `Failed: ${e}` });
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` });
   } finally {
     submitting.value = false;
   }
@@ -349,14 +279,14 @@ async function submitAdd() {
 // ── Drag & drop (pointer-events based — HTML5 DnD is broken in WKWebView) ────
 type Preset = typeof SHIFT_PRESETS[0];
 type DragState =
-  | { kind: "entry";  id: number }
+  | { kind: "entry";  id: string }
   | { kind: "preset"; preset: Preset }
   | null;
 
 let _drag: DragState = null;
 const isDragging    = ref(false);
 const dropTargetKey = ref("");
-const droppedId     = ref<number | null>(null);
+const droppedId     = ref<string | null>(null);
 const ghostStyle    = ref({ left: "0px", top: "0px", display: "none" });
 const ghostLabel    = ref("");
 const ghostColor    = ref("blue");
@@ -368,12 +298,11 @@ function presetColor(p: Preset): string {
   return "purple";
 }
 
-function dropKey(staffId: number | null, date: Date): string {
+function dropKey(staffId: string | null, date: Date): string {
   return staffId === null ? `day-${localDateStr(date)}` : `${staffId}-${localDateStr(date)}`;
 }
 
 function getCellUnder(x: number, y: number): HTMLElement | null {
-  // Temporarily hide ghost so elementFromPoint sees what's underneath
   const ghost = document.getElementById("drag-ghost");
   if (ghost) ghost.style.display = "none";
   const el = document.elementFromPoint(x, y)?.closest("[data-cell-key]") as HTMLElement | null;
@@ -401,7 +330,7 @@ async function onPointerUp(e: PointerEvent) {
   const cell = getCellUnder(e.clientX, e.clientY);
   if (!cell) return;
 
-  const staffId = cell.dataset.staffId ? Number(cell.dataset.staffId) : null;
+  const staffId = cell.dataset.staffId ? cell.dataset.staffId : null;
   const date    = new Date(cell.dataset.date + "T00:00:00");
 
   // ── Move existing entry ────────────────────────────────────────────────────
@@ -412,17 +341,20 @@ async function onPointerUp(e: PointerEvent) {
     const newStaffId = staffId ?? entry.staff_id;
     if (entry.staff_id === newStaffId && entry.shift_date === newDate) return;
     try {
-      await invoke("update_schedule", {
-        id:        entry.id,
-        input:     { staff_id: newStaffId, shift_date: newDate, shift_start: entry.shift_start, shift_end: entry.shift_end, shift_hours: entry.shift_hours, notes: entry.notes ?? null },
-        actorRole: auth.user?.role,
+      await server.updateRoster(entry.id, {
+        user_id:     newStaffId,
+        shift_date:  newDate,
+        shift_start: entry.shift_start,
+        shift_end:   entry.shift_end,
+        shift_hours: entry.shift_hours,
+        notes:       entry.notes ?? null,
       });
       await loadSchedule();
       await nextTick();
       droppedId.value = entry.id;
       setTimeout(() => { droppedId.value = null; }, 450);
-    } catch (err) {
-      $q.notify({ type: "negative", message: `Failed to move shift: ${err}` });
+    } catch (err: any) {
+      $q.notify({ type: "negative", message: `근무 이동 실패: ${err?.message ?? err}` });
     }
     return;
   }
@@ -431,8 +363,7 @@ async function onPointerUp(e: PointerEvent) {
   if (payload.kind === "preset" && staffId !== null) {
     const preset = payload.preset;
 
-    // Custom preset → open dialog pre-filled with the target cell
-    if (preset.label === "Custom") {
+    if (preset.label === "직접입력") {
       form.value = {
         staff_id:    staffId,
         shift_date:  localDateStr(date),
@@ -447,15 +378,18 @@ async function onPointerUp(e: PointerEvent) {
     }
 
     try {
-      await invoke("create_schedule", {
-        input:     { staff_id: staffId, shift_date: localDateStr(date), shift_start: preset.start, shift_end: preset.end, shift_hours: preset.hours, notes: null },
-        actorRole: auth.user?.role,
-        actorId:   auth.user?.id,
+      await server.createRoster({
+        user_id:     staffId,
+        shift_date:  localDateStr(date),
+        shift_start: preset.start,
+        shift_end:   preset.end,
+        shift_hours: preset.hours,
+        notes:       null,
       });
-      $q.notify({ type: "positive", message: `${preset.label} added.` });
+      $q.notify({ type: "positive", message: `${preset.label} 추가됨.` });
       await loadSchedule();
-    } catch (err) {
-      $q.notify({ type: "negative", message: `Failed: ${err}` });
+    } catch (err: any) {
+      $q.notify({ type: "negative", message: `실패: ${err?.message ?? err}` });
     }
   }
 }
@@ -474,14 +408,14 @@ function startDrag(e: PointerEvent, state: DragState, label: string, color: stri
 
 // ── Edit shift dialog ─────────────────────────────────────────────────────────
 const showEdit       = ref(false);
-const editingId      = ref<number | null>(null);
-const editingStaffId = ref<number | null>(null);
+const editingId      = ref<string | null>(null);
+const editingStaffId = ref<string | null>(null);
 const editSubmitting = ref(false);
 const editForm = ref({
   shift_date: "", preset: SHIFT_PRESETS[0], shift_start: "07:00", shift_end: "19:00", shift_hours: 12, notes: "",
 });
 function applyEditPreset() {
-  if (editForm.value.preset.label !== "Custom") {
+  if (editForm.value.preset.label !== "직접입력") {
     editForm.value.shift_start = editForm.value.preset.start;
     editForm.value.shift_end   = editForm.value.preset.end;
     editForm.value.shift_hours = editForm.value.preset.hours;
@@ -493,7 +427,7 @@ function openEditDialog(entry: ScheduleEntry) {
   editingStaffId.value = entry.staff_id;
   const matched = SHIFT_PRESETS.find(
     p => p.start === entry.shift_start && p.end === entry.shift_end && p.hours === entry.shift_hours
-  ) ?? SHIFT_PRESETS.find(p => p.label === "Custom")!;
+  ) ?? SHIFT_PRESETS.find(p => p.label === "직접입력")!;
   editForm.value = {
     shift_date: entry.shift_date, preset: matched,
     shift_start: entry.shift_start, shift_end: entry.shift_end,
@@ -505,23 +439,19 @@ async function submitEdit() {
   if (!editingId.value || !editingStaffId.value) return;
   editSubmitting.value = true;
   try {
-    await invoke("update_schedule", {
-      id: editingId.value,
-      input: {
-        staff_id:    editingStaffId.value,
-        shift_date:  editForm.value.shift_date,
-        shift_start: editForm.value.shift_start,
-        shift_end:   editForm.value.shift_end,
-        shift_hours: editForm.value.shift_hours,
-        notes:       editForm.value.notes || null,
-      },
-      actorRole: auth.user?.role,
+    await server.updateRoster(editingId.value, {
+      user_id:     editingStaffId.value,
+      shift_date:  editForm.value.shift_date,
+      shift_start: editForm.value.shift_start,
+      shift_end:   editForm.value.shift_end,
+      shift_hours: editForm.value.shift_hours,
+      notes:       editForm.value.notes || null,
     });
-    $q.notify({ type: "positive", message: "Shift updated." });
+    $q.notify({ type: "positive", message: "근무가 수정되었습니다." });
     showEdit.value = false;
     await loadSchedule();
-  } catch (e) {
-    $q.notify({ type: "negative", message: `Failed: ${e}` });
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` });
   } finally {
     editSubmitting.value = false;
   }
@@ -533,25 +463,25 @@ function toggleExpand(date: Date) {
   const k = localDateStr(date);
   if (expandedDays.value.has(k)) expandedDays.value.delete(k);
   else expandedDays.value.add(k);
-  expandedDays.value = new Set(expandedDays.value); // trigger reactivity
+  expandedDays.value = new Set(expandedDays.value);
 }
 function isExpanded(date: Date) { return expandedDays.value.has(localDateStr(date)); }
 
 // ── Delete shift ──────────────────────────────────────────────────────────────
 async function deleteShift(entry: ScheduleEntry) {
   $q.dialog({
-    title: "Remove shift?",
-    message: `Remove ${entry.shift_start}–${entry.shift_end} for ${entry.staff_name} on ${entry.shift_date}?`,
-    cancel: { label: "Cancel", flat: true },
-    ok:     { label: "Remove", color: "negative", unelevated: true },
+    title: "근무 삭제",
+    message: `${entry.staff_name}님의 ${entry.shift_date} ${entry.shift_start}–${entry.shift_end} 근무를 삭제할까요?`,
+    cancel: { label: "취소", flat: true },
+    ok:     { label: "삭제", color: "negative", unelevated: true },
     persistent: true,
   }).onOk(async () => {
     try {
-      await invoke("delete_schedule", { id: entry.id, actorRole: auth.user?.role });
-      $q.notify({ type: "positive", message: "Shift removed." });
+      await server.deleteRoster(entry.id);
+      $q.notify({ type: "positive", message: "근무가 삭제되었습니다." });
       await loadSchedule();
-    } catch (e) {
-      $q.notify({ type: "negative", message: `Failed: ${e}` });
+    } catch (e: any) {
+      $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` });
     }
   });
 }
@@ -562,50 +492,17 @@ async function deleteShift(entry: ScheduleEntry) {
     <!-- Header -->
     <div class="row items-center q-mb-md q-gutter-sm">
       <div class="col">
-        <div class="text-h5 text-weight-bold">Schedule</div>
+        <div class="text-h5 text-weight-bold">근무일정</div>
         <div class="text-caption text-grey-6">
-          <template v-if="isStaff && myTeam">
-            <q-icon :name="'o_groups'" size="xs" class="q-mr-xs" />
-            {{ myTeam.name }} · {{ myTeam.manager_name }}
-          </template>
-          <template v-else>
-            {{ isManager ? "Manage staff shift schedule" : "View staff shift schedule (read-only)" }}
-          </template>
+          {{ isManager ? "직원 근무 일정 관리" : "직원 근무 일정 (읽기 전용)" }}
         </div>
-      </div>
-
-      <!-- Team filter: manager / admin only -->
-      <div v-if="!isStaff && allTeams.length" class="col-auto">
-        <q-btn-group unelevated rounded>
-          <q-btn
-            v-for="opt in teamOptions"
-            :key="String(opt.value)"
-            :label="opt.label"
-            :color="selectedTeamId === opt.value ? 'primary' : 'grey-2'"
-            :text-color="selectedTeamId === opt.value ? 'white' : 'grey-8'"
-            :style="opt.value !== null && selectedTeamId !== opt.value
-              ? { borderBottom: `2px solid ${(opt as any).color}` }
-              : {}"
-            size="sm" dense no-caps unelevated
-            @click="selectedTeamId = opt.value"
-          />
-        </q-btn-group>
-      </div>
-
-      <!-- Staff: show their team badge -->
-      <div v-if="isStaff && myTeam" class="col-auto">
-        <q-badge
-          :style="{ background: myTeam.color }"
-          text-color="white"
-          :label="myTeam.name"
-        />
       </div>
 
       <div class="col-auto">
         <q-btn-toggle
           v-model="viewMode"
           toggle-color="primary"
-          :options="[{ label: 'Week', value: 'week' }, { label: 'Month', value: 'month' }]"
+          :options="[{ label: '주간', value: 'week' }, { label: '월간', value: 'month' }]"
           unelevated rounded dense size="sm"
         />
       </div>
@@ -614,11 +511,11 @@ async function deleteShift(entry: ScheduleEntry) {
     <!-- Drag palette (managers, week view only) -->
     <div v-if="isManager && viewMode === 'week'" class="drag-palette q-mb-md">
       <div class="text-caption text-grey-6 q-mb-sm">
-        <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs" />Drag a shift onto any cell to assign it
+        <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs" />근무 유형을 셀로 드래그하여 배정하세요
       </div>
       <div class="row q-gutter-sm items-center">
         <div
-          v-for="p in SHIFT_PRESETS.filter(p => p.label !== 'Custom')"
+          v-for="p in SHIFT_PRESETS.filter(p => p.label !== '직접입력')"
           :key="p.label"
           class="palette-chip"
           :class="`palette-chip--${presetColor(p)}`"
@@ -628,9 +525,9 @@ async function deleteShift(entry: ScheduleEntry) {
           {{ p.label }}
         </div>
         <div class="palette-chip palette-chip--custom"
-             @pointerdown="startDrag($event, { kind: 'preset', preset: SHIFT_PRESETS.find(p => p.label === 'Custom')! }, 'Custom', 'custom')">
+             @pointerdown="startDrag($event, { kind: 'preset', preset: SHIFT_PRESETS.find(p => p.label === '직접입력')! }, '직접입력', 'custom')">
           <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs opacity-60" />
-          Custom
+          직접입력
         </div>
       </div>
     </div>
@@ -642,7 +539,7 @@ async function deleteShift(entry: ScheduleEntry) {
       <span class="text-subtitle1 text-weight-medium q-mx-sm">
         {{ viewMode === 'week' ? weekLabel() : monthLabel() }}
       </span>
-      <q-btn flat dense size="sm" label="Today" @click="goToday" class="text-grey-7" />
+      <q-btn flat dense size="sm" label="오늘" @click="goToday" class="text-grey-7" />
       <q-spinner-dots v-if="loading" color="primary" size="1.2rem" class="q-ml-sm" />
     </div>
 
@@ -652,7 +549,7 @@ async function deleteShift(entry: ScheduleEntry) {
         <table class="schedule-table">
           <thead>
             <tr>
-              <th class="staff-col">Staff Member</th>
+              <th class="staff-col">직원</th>
               <th
                 v-for="(date, di) in weekDates" :key="di"
                 :class="['day-col', { 'today-col': isToday(date) }]"
@@ -662,7 +559,7 @@ async function deleteShift(entry: ScheduleEntry) {
                   {{ date.getMonth() + 1 }}/{{ date.getDate() }}
                 </div>
               </th>
-              <th class="hours-col">Hrs/wk</th>
+              <th class="hours-col">주간 시간</th>
             </tr>
           </thead>
           <tbody>
@@ -670,8 +567,8 @@ async function deleteShift(entry: ScheduleEntry) {
               <td class="staff-name-cell">
                 <q-icon name="o_person" size="xs" color="grey-6" class="q-mr-xs" />
                 <span>{{ staff.label }}</span>
-                <q-badge v-if="staff.value === auth.user?.id"
-                         color="primary" label="You"
+                <q-badge v-if="staff.value === session.me?.id"
+                         color="primary" label="나"
                          class="q-ml-xs" style="font-size:0.65rem" />
               </td>
               <td
@@ -699,14 +596,13 @@ async function deleteShift(entry: ScheduleEntry) {
                   </div>
                   <q-tooltip v-if="entry.notes">{{ entry.notes }}</q-tooltip>
                 </div>
-                <!-- Add button on hover (manager only) -->
                 <q-btn
                   v-if="isManager"
                   flat round dense icon="o_add" size="xs" color="grey-5"
                   class="add-btn"
                   @click="openAddForCell(staff.value, date)"
                 >
-                  <q-tooltip>Add shift</q-tooltip>
+                  <q-tooltip>근무 추가</q-tooltip>
                 </q-btn>
               </td>
               <td class="hours-cell">
@@ -717,7 +613,7 @@ async function deleteShift(entry: ScheduleEntry) {
             </tr>
             <tr v-if="staffRows.length === 0 && !loading">
               <td :colspan="9" class="text-center text-grey-5 q-py-xl">
-                <q-icon name="o_event_busy" size="3rem" color="grey-4" /><br />No schedule data for this week.
+                <q-icon name="o_event_busy" size="3rem" color="grey-4" /><br />이번 주 근무 데이터가 없습니다.
               </td>
             </tr>
           </tbody>
@@ -770,7 +666,7 @@ async function deleteShift(entry: ScheduleEntry) {
               class="month-more"
               @click.stop="toggleExpand(date)"
             >
-              {{ isExpanded(date) ? '▲ show less' : `+${dayEntries(date).length - 3} more` }}
+              {{ isExpanded(date) ? '▲ 접기' : `+${dayEntries(date).length - 3} 더보기` }}
             </div>
           </div>
         </template>
@@ -779,25 +675,25 @@ async function deleteShift(entry: ScheduleEntry) {
 
     <!-- Legend -->
     <div class="row q-mt-md q-gutter-sm items-center">
-      <span class="text-caption text-grey-6">Legend:</span>
-      <q-chip dense size="sm" color="teal"        text-color="white">12h shift</q-chip>
-      <q-chip dense size="sm" color="blue"        text-color="white">Morning 8h</q-chip>
-      <q-chip dense size="sm" color="deep-orange" text-color="white">Afternoon 8h</q-chip>
-      <q-chip dense size="sm" color="purple"      text-color="white">Night 8h</q-chip>
+      <span class="text-caption text-grey-6">범례:</span>
+      <q-chip dense size="sm" color="teal"        text-color="white">12시간</q-chip>
+      <q-chip dense size="sm" color="blue"        text-color="white">오전 8h</q-chip>
+      <q-chip dense size="sm" color="deep-orange" text-color="white">오후 8h</q-chip>
+      <q-chip dense size="sm" color="purple"      text-color="white">야간 8h</q-chip>
     </div>
 
     <!-- ── Add Shift Dialog ────────────────────────────────────────────────── -->
     <q-dialog v-model="showAdd" persistent>
       <q-card style="min-width: 420px">
         <q-card-section class="row items-center q-pb-none">
-          <div class="text-h6">Add Shift</div>
+          <div class="text-h6">근무 추가</div>
           <q-space />
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
         <q-card-section class="q-gutter-sm">
-          <q-select v-model="form.staff_id" :options="staffList" label="Staff Member *" outlined dense emit-value map-options />
+          <q-select v-model="form.staff_id" :options="staffList" label="직원 *" outlined dense emit-value map-options />
           <div class="cursor-pointer">
-            <q-input v-model="form.shift_date" label="Date *" outlined dense readonly style="pointer-events:none">
+            <q-input v-model="form.shift_date" label="날짜 *" outlined dense readonly style="pointer-events:none">
               <template #append>
                 <q-icon name="o_event" color="grey-6" />
               </template>
@@ -805,27 +701,27 @@ async function deleteShift(entry: ScheduleEntry) {
             <q-popup-proxy transition-show="scale" transition-hide="scale">
               <q-date v-model="form.shift_date" mask="YYYY-MM-DD" minimal>
                 <div class="row items-center justify-end q-pa-sm">
-                  <q-btn v-close-popup label="OK" color="primary" flat dense />
+                  <q-btn v-close-popup label="확인" color="primary" flat dense />
                 </div>
               </q-date>
             </q-popup-proxy>
           </div>
-          <q-select v-model="form.preset" :options="SHIFT_PRESETS" label="Shift Type" outlined dense option-label="label" @update:model-value="applyPreset" />
-          <template v-if="form.preset.label === 'Custom'">
+          <q-select v-model="form.preset" :options="SHIFT_PRESETS" label="근무 유형" outlined dense option-label="label" @update:model-value="applyPreset" />
+          <template v-if="form.preset.label === '직접입력'">
             <div class="row q-gutter-sm">
-              <q-input v-model="form.shift_start" label="Start" outlined dense class="col" hint="HH:MM" />
-              <q-input v-model="form.shift_end"   label="End"   outlined dense class="col" hint="HH:MM" />
-              <q-input v-model.number="form.shift_hours" label="Hours" type="number" outlined dense class="col" />
+              <q-input v-model="form.shift_start" label="시작" outlined dense class="col" hint="HH:MM" />
+              <q-input v-model="form.shift_end"   label="종료" outlined dense class="col" hint="HH:MM" />
+              <q-input v-model.number="form.shift_hours" label="시간" type="number" outlined dense class="col" />
             </div>
           </template>
           <div v-else class="text-caption text-grey-7 q-px-xs">
             {{ form.shift_start }} – {{ form.shift_end }} · {{ form.shift_hours }}h
           </div>
-          <q-input v-model="form.notes" label="Notes (optional)" outlined dense />
+          <q-input v-model="form.notes" label="메모 (선택)" outlined dense />
         </q-card-section>
         <q-card-actions align="right" class="q-px-md q-pb-md">
-          <q-btn flat label="Cancel" v-close-popup />
-          <q-btn color="primary" label="Add Shift" unelevated :loading="submitting" @click="submitAdd" />
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="근무 추가" unelevated :loading="submitting" @click="submitAdd" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -834,13 +730,13 @@ async function deleteShift(entry: ScheduleEntry) {
     <q-dialog v-model="showEdit" persistent>
       <q-card style="min-width: 420px">
         <q-card-section class="row items-center q-pb-none">
-          <div class="text-h6">Edit Shift</div>
+          <div class="text-h6">근무 수정</div>
           <q-space />
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
         <q-card-section class="q-gutter-sm">
           <div class="cursor-pointer">
-            <q-input v-model="editForm.shift_date" label="Date *" outlined dense readonly style="pointer-events:none">
+            <q-input v-model="editForm.shift_date" label="날짜 *" outlined dense readonly style="pointer-events:none">
               <template #append>
                 <q-icon name="o_event" color="grey-6" />
               </template>
@@ -848,27 +744,27 @@ async function deleteShift(entry: ScheduleEntry) {
             <q-popup-proxy transition-show="scale" transition-hide="scale">
               <q-date v-model="editForm.shift_date" mask="YYYY-MM-DD" minimal>
                 <div class="row items-center justify-end q-pa-sm">
-                  <q-btn v-close-popup label="OK" color="primary" flat dense />
+                  <q-btn v-close-popup label="확인" color="primary" flat dense />
                 </div>
               </q-date>
             </q-popup-proxy>
           </div>
-          <q-select v-model="editForm.preset" :options="SHIFT_PRESETS" label="Shift Type" outlined dense option-label="label" @update:model-value="applyEditPreset" />
-          <template v-if="editForm.preset.label === 'Custom'">
+          <q-select v-model="editForm.preset" :options="SHIFT_PRESETS" label="근무 유형" outlined dense option-label="label" @update:model-value="applyEditPreset" />
+          <template v-if="editForm.preset.label === '직접입력'">
             <div class="row q-gutter-sm">
-              <q-input v-model="editForm.shift_start" label="Start" outlined dense class="col" hint="HH:MM" />
-              <q-input v-model="editForm.shift_end"   label="End"   outlined dense class="col" hint="HH:MM" />
-              <q-input v-model.number="editForm.shift_hours" label="Hours" type="number" outlined dense class="col" />
+              <q-input v-model="editForm.shift_start" label="시작" outlined dense class="col" hint="HH:MM" />
+              <q-input v-model="editForm.shift_end"   label="종료" outlined dense class="col" hint="HH:MM" />
+              <q-input v-model.number="editForm.shift_hours" label="시간" type="number" outlined dense class="col" />
             </div>
           </template>
           <div v-else class="text-caption text-grey-7 q-px-xs">
             {{ editForm.shift_start }} – {{ editForm.shift_end }} · {{ editForm.shift_hours }}h
           </div>
-          <q-input v-model="editForm.notes" label="Notes (optional)" outlined dense />
+          <q-input v-model="editForm.notes" label="메모 (선택)" outlined dense />
         </q-card-section>
         <q-card-actions align="right" class="q-px-md q-pb-md">
-          <q-btn flat label="Cancel" v-close-popup />
-          <q-btn color="primary" label="Save Changes" unelevated :loading="editSubmitting" @click="submitEdit" />
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="저장" unelevated :loading="editSubmitting" @click="submitEdit" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -895,7 +791,7 @@ async function deleteShift(entry: ScheduleEntry) {
 .schedule-table thead th { background: #f8fafc; font-size: 0.78rem; font-weight: 600; text-align: center; }
 .staff-col  { width: 160px; min-width: 140px; }
 .day-col    { min-width: 110px; text-align: center; }
-.hours-col  { width: 64px; text-align: center; }
+.hours-col  { width: 80px; text-align: center; }
 .today-col  { background: #eff6ff; }
 .today-bg   { background: #f0f9ff; }
 .day-label  { font-size: 0.78rem; font-weight: 600; }
@@ -904,7 +800,6 @@ async function deleteShift(entry: ScheduleEntry) {
 .day-cell   { min-height: 52px; position: relative; }
 .hours-cell { text-align: center; font-size: 0.82rem; color: #374151; }
 
-/* Add button — appears on cell hover */
 .add-btn { opacity: 0; transition: opacity 0.15s; }
 .day-cell:hover .add-btn { opacity: 1; }
 

@@ -262,7 +262,10 @@ onMounted(async () => {
     </div>
 
     <!-- detail modal -->
-    <q-dialog v-model="selected" maximized-md>
+    <q-dialog
+      :model-value="!!selected"
+      @update:model-value="(v: boolean) => { if (!v) selected = null; }"
+    >
       <q-card v-if="selected" style="max-width: 800px; width: 100%">
         <q-card-section class="row items-center q-pb-none">
           <div>

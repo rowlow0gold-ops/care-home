@@ -1,6 +1,15 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { Store } from "@tauri-apps/plugin-store";
+
+// Local app preferences (not business data) — persisted in a Tauri store file,
+// NOT the server and NOT the old SQLite DB.
+const PREFS_FILE = "prefs.dat";
+let prefs: Store | null = null;
+async function prefsStore() {
+  if (!prefs) prefs = await Store.load(PREFS_FILE);
+  return prefs;
+}
 
 export type ShiftModel = "12h" | "8h";
 
@@ -48,14 +57,15 @@ export function detectCurrentShift(model: ShiftModel): string {
 
 export const useSettingsStore = defineStore("settings", () => {
   const shiftModel = ref<ShiftModel>("12h");
-  const facilityName = ref("Sunshine Care Home");
+  const facilityName = ref("케어닥");
   const loaded = ref(false);
 
   async function load() {
     try {
-      const model = await invoke<string | null>("get_setting", { key: "shift_model" });
+      const s = await prefsStore();
+      const model = await s.get<string>("shift_model");
       if (model === "12h" || model === "8h") shiftModel.value = model;
-      const name = await invoke<string | null>("get_setting", { key: "facility_name" });
+      const name = await s.get<string>("facility_name");
       if (name) facilityName.value = name;
     } catch (_) {
       // use defaults
@@ -65,12 +75,16 @@ export const useSettingsStore = defineStore("settings", () => {
 
   async function saveShiftModel(model: ShiftModel) {
     shiftModel.value = model;
-    await invoke("set_setting", { key: "shift_model", value: model });
+    const s = await prefsStore();
+    await s.set("shift_model", model);
+    await s.save();
   }
 
   async function saveFacilityName(name: string) {
     facilityName.value = name;
-    await invoke("set_setting", { key: "facility_name", value: name });
+    const s = await prefsStore();
+    await s.set("facility_name", name);
+    await s.save();
   }
 
   function getShiftOptions(): ShiftOption[] {

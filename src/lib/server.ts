@@ -244,7 +244,129 @@ export const server = {
     return fetchJson(`/api/v1/residents/${residentId}/medications`);
   },
   staff() {
-    return fetchJson("/api/v1/staff");
+    return fetchJson<StaffMember[]>("/api/v1/staff");
+  },
+  createStaff(payload: {
+    email: string;
+    full_name: string;
+    role: string;
+    position: string;
+    password: string;
+    phone?: string | null;
+    employment_type?: string | null;
+    branch_id?: string | null;
+  }) {
+    return fetchJson<StaffMember>("/api/v1/staff", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  updateStaff(
+    id: string,
+    payload: {
+      expected_updated_at: string;
+      full_name?: string;
+      email?: string;
+      phone?: string | null;
+      position?: string;
+      employment_type?: string;
+    },
+  ) {
+    return fetchJson<StaffMember>(`/api/v1/staff/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+  deactivateStaff(id: string) {
+    return fetchJson<StaffMember>(`/api/v1/staff/${id}/deactivate`, {
+      method: "PATCH",
+    });
+  },
+
+  // === roster (근무일정) — free-form per-branch shift roster ===
+  roster(start: string, end: string) {
+    return fetchJson<RosterEntry[]>(
+      `/api/v1/roster?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+    );
+  },
+  createRoster(payload: UpsertRoster) {
+    return fetchJson<RosterEntry>("/api/v1/roster", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  updateRoster(id: string, payload: UpsertRoster) {
+    return fetchJson<RosterEntry>(`/api/v1/roster/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteRoster(id: string) {
+    return fetchJson(`/api/v1/roster/${id}`, { method: "DELETE" });
+  },
+
+  // === notifications feed — flagged care logs (in-app alerts) ===
+  flaggedCareLogs(pageSize = 100) {
+    return fetchJson<{ items: CareLogRow[]; total: number }>(
+      `/api/v1/care-logs/paged?flagged_only=true&page=1&page_size=${pageSize}`,
+    );
+  },
+
+  // === reports — download server-generated XLSX exports ===
+  /** Fetch any *.xlsx export endpoint as raw bytes for native save. */
+  async exportXlsx(path: string): Promise<Uint8Array> {
+    const t = await getToken();
+    if (!t) {
+      const err = new Error("not authenticated") as ServerError;
+      err.status = 401;
+      throw err;
+    }
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${t}` },
+    });
+    if (!res.ok) {
+      const err = new Error(`API ${res.status}`) as ServerError;
+      err.status = res.status;
+      throw err;
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  },
+  dashboardSummary() {
+    return fetchJson<Record<string, any>>("/api/v1/dashboard/summary");
+  },
+
+  // === billing (정산) — monthly per-branch close ===
+  billingRuns() {
+    return fetchJson<BillingRun[]>("/api/v1/billing/runs");
+  },
+  runBilling(payload: { year_month?: string; branch_id?: string }) {
+    return fetchJson<{
+      billing_run_id: string;
+      year_month: string;
+      branch_id: string;
+      status: string;
+    }>("/api/v1/billing/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  /** Download a finished run's XLSX as raw bytes (for native save). */
+  async billingXlsx(id: string): Promise<Uint8Array> {
+    const t = await getToken();
+    if (!t) {
+      const err = new Error("not authenticated") as ServerError;
+      err.status = 401;
+      throw err;
+    }
+    const res = await fetch(`${API_BASE}/api/v1/billing/runs/${id}/xlsx`, {
+      headers: { Authorization: `Bearer ${t}` },
+    });
+    if (!res.ok) {
+      const err = new Error(`API ${res.status}`) as ServerError;
+      err.status = res.status;
+      throw err;
+    }
+    return new Uint8Array(await res.arrayBuffer());
   },
   dashboard() {
     return fetchJson("/api/v1/dashboard/summary");
@@ -308,6 +430,105 @@ export const server = {
       body: JSON.stringify({ status, note: note ?? null }),
     });
   },
+
+  // === meals (식단) — per-branch weekly menu grid ===
+  mealsWeek(weekStart: string) {
+    return fetchJson<MealPlan[]>(
+      `/api/v1/meals?week_start=${encodeURIComponent(weekStart)}`,
+    );
+  },
+  mealsRange(start: string, end: string) {
+    return fetchJson<MealPlan[]>(
+      `/api/v1/meals/range?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+    );
+  },
+  upsertMeal(payload: UpsertMealPlan) {
+    return fetchJson<MealPlan>("/api/v1/meals", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  bulkUpsertMeals(plans: UpsertMealPlan[]) {
+    return fetchJson<{ count: number }>("/api/v1/meals/bulk", {
+      method: "POST",
+      body: JSON.stringify(plans),
+    });
+  },
 };
+
+export interface CareLogRow {
+  id: string;
+  resident_id: string;
+  resident_name: string;
+  resident_room: string | null;
+  recorded_at: string;
+  category: string;
+  body: string;
+  flagged: boolean;
+}
+
+export interface RosterEntry {
+  id: string;
+  user_id: string;
+  staff_name: string;
+  shift_date: string;
+  shift_start: string;
+  shift_end: string;
+  shift_hours: number;
+  notes: string | null;
+}
+
+export interface UpsertRoster {
+  user_id: string;
+  shift_date: string;
+  shift_start: string;
+  shift_end: string;
+  shift_hours: number;
+  notes?: string | null;
+}
+
+export interface BillingRun {
+  id: string;
+  branch_id: string;
+  year_month: string;
+  triggered_at: string;
+  completed_at: string | null;
+  status: string;
+  resident_count: number | null;
+  total_amount: number | null;
+  failure_reason: string | null;
+  has_xlsx: boolean;
+}
+
+export interface StaffMember {
+  id: string;
+  branch_id: string | null;
+  email: string;
+  full_name: string;
+  role: string;
+  phone: string | null;
+  deactivated_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MealPlan {
+  id: string;
+  week_start: string;
+  day_of_week: number;
+  meal_type: string;
+  menu: string;
+  calories: number | null;
+  notes: string | null;
+}
+
+export interface UpsertMealPlan {
+  week_start: string;
+  day_of_week: number;
+  meal_type: string;
+  menu: string;
+  calories?: number | null;
+  notes?: string | null;
+}
 
 export type { MeUser };

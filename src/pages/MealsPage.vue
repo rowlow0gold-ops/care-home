@@ -2,25 +2,24 @@
 import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useQuasar } from "quasar";
-import { useAuthStore } from "@/stores/auth";
+import { server } from "@/lib/server";
+import { useServerSessionStore } from "@/stores/server-session";
 
 import * as XLSX from "xlsx";
 
 const $q = useQuasar();
-const auth = useAuthStore();
+const session = useServerSessionStore();
 
-// ── Role check ──────────────────────────────────────────────────────────────
-const isStaff   = computed(() => auth.user?.role === "staff");
-const canManage = computed(() => {
-  const role = auth.user?.role;
-  return role === "manager" || role === "admin";
-});
+// ── Role check (server permission ladder) ───────────────────────────────────
+// caregiver/nurse = read-only floor staff; branch_manager+ can edit; hq = admin.
+const isStaff   = computed(() => !session.hasRole("branch_manager"));
+const canManage = computed(() => session.hasRole("branch_manager"));
 const canImport = canManage;
-const isAdmin   = computed(() => auth.user?.role === "admin");
+const isAdmin   = computed(() => session.hasRole("hq"));
 
 // ── Types ───────────────────────────────────────────────────────────────────
 interface MealPlan {
-  id?: number;
+  id?: string;
   week_start: string;
   day_of_week: number;
   meal_type: string;
@@ -145,7 +144,7 @@ const weekGrid = computed(() => {
 async function loadWeek() {
   weekLoading.value = true;
   try {
-    weekMeals.value = await invoke<MealPlan[]>("list_meal_plans", { weekStart: weekStart.value });
+    weekMeals.value = await server.mealsWeek(weekStart.value);
   } catch { weekMeals.value = []; }
   finally { weekLoading.value = false; }
 }
@@ -181,10 +180,10 @@ const monthRange = computed(() => {
 async function loadMonth() {
   monthLoading.value = true;
   try {
-    monthMeals.value = await invoke<MealPlan[]>("list_meal_plans_range", {
-      startDate: monthRange.value.start,
-      endDate:   monthRange.value.end,
-    });
+    monthMeals.value = await server.mealsRange(
+      monthRange.value.start,
+      monthRange.value.end,
+    );
   } catch { monthMeals.value = []; }
   finally { monthLoading.value = false; }
 }
@@ -293,15 +292,13 @@ async function saveEdit() {
   if (!valid) return;
   submitting.value = true;
   try {
-    await invoke("upsert_meal_plan", {
-      input: {
-        week_start:  editTarget.value.week_start,
-        day_of_week: editTarget.value.day,
-        meal_type:   editTarget.value.mealType,
-        menu:        editForm.value.menu,
-        calories:    editForm.value.calories ? parseInt(editForm.value.calories) : null,
-        notes:       editForm.value.notes || null,
-      },
+    await server.upsertMeal({
+      week_start:  editTarget.value.week_start,
+      day_of_week: editTarget.value.day,
+      meal_type:   editTarget.value.mealType,
+      menu:        editForm.value.menu,
+      calories:    editForm.value.calories ? parseInt(editForm.value.calories) : null,
+      notes:       editForm.value.notes || null,
     });
     $q.notify({ type: "positive", message: "Saved." });
     showEditDialog.value = false;
@@ -348,7 +345,7 @@ async function saveWorkbook(wb: ReturnType<typeof XLSX.utils.book_new>, filename
 
 // Build a multi-sheet workbook from a date range
 async function buildRangeWorkbook(startDate: string, endDate: string): Promise<ReturnType<typeof XLSX.utils.book_new> | null> {
-  const all = await invoke<MealPlan[]>("list_meal_plans_range", { startDate, endDate });
+  const all = await server.mealsRange(startDate, endDate);
   if (!all.length) {
     $q.notify({ type: "warning", message: "No meal data found in the database." });
     return null;
@@ -496,7 +493,7 @@ async function handleImport(event: Event) {
     // 3. Check for existing data (conflict detection)
     let existing: MealPlan[] = [];
     try {
-      existing = await invoke<MealPlan[]>("list_meal_plans_range", { startDate: rangeStart, endDate: rangeEnd });
+      existing = await server.mealsRange(rangeStart, rangeEnd);
     } catch (e) {
       $q.notify({ type: "negative", message: `Failed to check existing data: ${e}` });
       importing.value = false;
@@ -506,7 +503,7 @@ async function handleImport(event: Event) {
     const doImport = async () => {
       try {
         const plans = allPlans.map(({ _date, ...rest }) => rest);
-        const count = await invoke<number>("bulk_upsert_meal_plans", { plans });
+        const { count } = await server.bulkUpsertMeals(plans);
         $q.notify({ type: "positive", message: `Successfully imported ${count} meal entries.`, timeout: 4000 });
         loadMonth();
         if (tab.value === "weekly") loadWeek();
