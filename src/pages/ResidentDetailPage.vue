@@ -3,14 +3,17 @@ import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useQuasar } from "quasar";
 import { server, type Resident } from "@/lib/server";
+import { useServerSessionStore } from "@/stores/server-session";
 
 const route = useRoute();
 const router = useRouter();
 const $q = useQuasar();
+const session = useServerSessionStore();
 const id = computed(() => String(route.params.id));
 
 const resident = ref<Resident | null>(null);
-const tab = ref<"care" | "vitals" | "meds">("care");
+const tab = ref<"care" | "vitals" | "meds" | "photos">("care");
+const canCreate = computed(() => session.canCreate);
 
 const sexLabel: Record<string, string> = { male: "남", female: "여", other: "기타" };
 const statusLabel: Record<string, string> = { active: "재원", discharged: "퇴소", deceased: "사망" };
@@ -110,9 +113,36 @@ async function administer(m: any) {
   finally { acting.value = null; }
 }
 
+// ── 사진 ────────────────────────────────────────────────────────────────────
+const photos = ref<Array<{ id: string; taken_at: string; caption: string | null; status: string; data_url: string }>>([]);
+const uploading = ref(false);
+const fileInput = ref<HTMLInputElement | null>(null);
+const statusKo: Record<string, string> = { pending: "대기", approved: "승인", rejected: "반려" };
+const statusColor: Record<string, string> = { pending: "orange", approved: "positive", rejected: "negative" };
+async function loadPhotos() {
+  try { photos.value = (await server.residentPhotos(id.value)).items; }
+  catch { photos.value = []; }
+}
+function pickPhoto() { fileInput.value?.click(); }
+async function onFile(e: Event) {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (!f) return;
+  uploading.value = true;
+  try {
+    await server.uploadPhoto(id.value, f);
+    $q.notify({ type: "positive", message: "사진이 업로드되었습니다." });
+    await loadPhotos();
+  } catch (e2: any) {
+    $q.notify({ type: "negative", message: `업로드 실패: ${e2?.message ?? e2}` });
+  } finally {
+    uploading.value = false;
+    if (fileInput.value) fileInput.value.value = "";
+  }
+}
+
 onMounted(async () => {
   await loadResident();
-  await Promise.all([loadCare(), loadVitals(), loadMeds()]);
+  await Promise.all([loadCare(), loadVitals(), loadMeds(), loadPhotos()]);
 });
 </script>
 
@@ -142,6 +172,7 @@ onMounted(async () => {
       <q-tab name="care" icon="o_assignment" label="케어 기록" />
       <q-tab name="vitals" icon="o_monitor_heart" label="활력징후" />
       <q-tab name="meds" icon="o_medication" label="투약" />
+      <q-tab name="photos" icon="o_photo_camera" label="사진" />
     </q-tabs>
 
     <!-- 케어 기록 -->
@@ -211,6 +242,32 @@ onMounted(async () => {
         </q-item>
         <q-item v-if="!meds.length"><q-item-section class="text-grey-5 text-center q-py-md">처방 없음</q-item-section></q-item>
       </q-list>
+    </div>
+
+    <!-- 사진 -->
+    <div v-show="tab === 'photos'">
+      <div class="row q-mb-sm items-center">
+        <q-space />
+        <q-btn v-if="canCreate" color="primary" outline icon="o_upload" label="사진 업로드" :loading="uploading" @click="pickPhoto" />
+        <input ref="fileInput" type="file" accept="image/*" class="hidden" @change="onFile" />
+      </div>
+      <div v-if="photos.length" class="row q-col-gutter-sm">
+        <div v-for="p in photos" :key="p.id" class="col-6 col-sm-4 col-md-3">
+          <q-card flat bordered>
+            <q-img :src="p.data_url" :ratio="1" />
+            <q-card-section class="q-pa-xs row items-center">
+              <q-badge :color="statusColor[p.status] ?? 'grey'" :label="statusKo[p.status] ?? p.status" />
+              <q-space />
+              <span class="text-caption text-grey-6">{{ fmt(p.taken_at) }}</span>
+            </q-card-section>
+            <q-card-section v-if="p.caption" class="q-pa-xs q-pt-none text-caption">{{ p.caption }}</q-card-section>
+          </q-card>
+        </div>
+      </div>
+      <div v-else class="column flex-center q-py-xl text-grey-5">
+        <q-icon name="o_photo_library" size="3rem" color="grey-4" />
+        <div class="q-mt-sm">사진 없음</div>
+      </div>
     </div>
 
     <!-- Add medication dialog -->

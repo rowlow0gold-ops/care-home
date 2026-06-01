@@ -194,6 +194,19 @@ export const server = {
   medicationAdministrations(residentId: string) {
     return fetchJson<any[]>(`/api/v1/residents/${residentId}/medication-administrations`);
   },
+  residentPhotos(residentId: string) {
+    return fetchJson<{ items: Array<{ id: string; taken_at: string; caption: string | null; status: string; data_url: string }>; total: number }>(
+      `/api/v1/residents/${residentId}/photos?page=1&page_size=60`,
+    );
+  },
+  uploadPhoto(residentId: string, file: File, caption?: string) {
+    const fd = new FormData();
+    fd.append("resident_id", residentId);
+    fd.append("tag", "regular");
+    if (caption) fd.append("caption", caption);
+    fd.append("file", file);
+    return fetchJson(`/api/v1/photos`, { method: "POST", body: fd });
+  },
   createResident(payload: {
     full_name: string;
     sex: "male" | "female" | "other";
