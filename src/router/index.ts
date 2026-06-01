@@ -17,10 +17,8 @@ const router = createRouter({
       meta: { requiresAuth: true },
       children: [
         { path: "", redirect: "/residents" },
-        { path: "residents",     name: "residents",     component: () => import("@/pages/ResidentsPage.vue"),    meta: { minRole: 1 } },
-        { path: "care-log",      redirect: { path: "/residents", query: { section: "carelog" } } },
-        { path: "medications",   redirect: { path: "/residents", query: { section: "medications" } } },
-        { path: "health-charts", redirect: { path: "/residents", query: { section: "healthcharts" } } },
+        { path: "residents",     name: "residents",       component: () => import("@/pages/ResidentsPage.vue"),      meta: { minRole: 1 } },
+        { path: "residents/:id", name: "resident-detail", component: () => import("@/pages/ResidentDetailPage.vue"), meta: { minRole: 1 } },
         { path: "schedule",      name: "schedule",      component: () => import("@/pages/SchedulePage.vue"),     meta: { minRole: 1 } },
         { path: "staff",         name: "staff",         component: () => import("@/pages/StaffPage.vue"),        meta: { minRole: 3 } },
         { path: "settings",      name: "settings",      component: () => import("@/pages/SettingsPage.vue"),     meta: { minRole: 3 } },

@@ -82,8 +82,10 @@ export const useServerSessionStore = defineStore("server-session", () => {
   }
 
   function canAccess(page: string): boolean {
+    // Detail routes inherit their list page's permission.
+    const key = page === "resident-detail" ? "residents" : page;
     const a = allowedPages();
-    return a === ALL || a.includes(page);
+    return a === ALL || a.includes(key);
   }
 
   /** First page the user is allowed to see — used as the post-login landing. */

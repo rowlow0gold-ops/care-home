@@ -162,7 +162,37 @@ export const server = {
     >("/api/v1/residents");
   },
   resident(id: string) {
-    return fetchJson(`/api/v1/residents/${id}`);
+    return fetchJson<Resident>(`/api/v1/residents/${id}`);
+  },
+  // HQ-style paged residents list (branch-scoped via branch_id).
+  residentsPaged(params: {
+    q?: string;
+    branch_id?: string;
+    care_grade?: string;
+    status?: string;
+    page?: number;
+    page_size?: number;
+    sort_by?: string;
+    sort_desc?: boolean;
+  }) {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.branch_id) qs.set("branch_id", params.branch_id);
+    if (params.care_grade) qs.set("care_grade", params.care_grade);
+    qs.set("status", params.status ?? "active");
+    qs.set("page", String(params.page ?? 1));
+    qs.set("page_size", String(params.page_size ?? 25));
+    if (params.sort_by) qs.set("sort_by", params.sort_by);
+    if (params.sort_desc) qs.set("sort_desc", "true");
+    return fetchJson<{ items: Resident[]; total: number; page: number; page_size: number }>(
+      `/api/v1/residents/paged?${qs.toString()}`,
+    );
+  },
+  administerMedication(id: string) {
+    return fetchJson(`/api/v1/medications/${id}/administer`, { method: "POST", body: "{}" });
+  },
+  medicationAdministrations(residentId: string) {
+    return fetchJson<any[]>(`/api/v1/residents/${residentId}/medication-administrations`);
   },
   createResident(payload: {
     full_name: string;
@@ -510,6 +540,19 @@ export interface BillingRun {
   total_amount: number | null;
   failure_reason: string | null;
   has_xlsx: boolean;
+}
+
+export interface Resident {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  full_name: string;
+  sex: "male" | "female" | "other";
+  birth_date: string;
+  care_grade: string | null;
+  room_number: string | null;
+  admitted_on: string;
+  status: "active" | "discharged" | "deceased";
 }
 
 export interface OrgPerson {
