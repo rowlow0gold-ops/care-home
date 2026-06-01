@@ -90,7 +90,7 @@ import { useServerSessionStore } from "@/stores/server-session";
 
 const DEMO_PW = "admin1234";
 
-const email = ref("hq@demo.com");
+const email = ref("admin.seoul-hub@demo.com");
 const password = ref(DEMO_PW);
 const showPwd = ref(false);
 const loading = ref(false);

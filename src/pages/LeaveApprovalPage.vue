@@ -6,7 +6,9 @@ import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
 const session = useServerSessionStore();
-const canDecide = computed(() => session.canEdit); // 행정+ can approve; 접수 read-only
+// Day-off approval is a desk task — both 행정 and 접수 (branch_manager) can decide.
+const canDecide = computed(() => session.hasRole("branch_manager"));
+const pagination = ref({ rowsPerPage: 20 });
 
 type Row = Awaited<ReturnType<typeof server.leaveRequests>>[number];
 const rows = ref<Row[]>([]);
@@ -81,7 +83,7 @@ onMounted(load);
       <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load" />
     </div>
 
-    <q-table :rows="rows" :columns="columns" row-key="id" flat bordered :loading="loading" hide-pagination :rows-per-page-options="[0]">
+    <q-table :rows="rows" :columns="columns" row-key="id" flat bordered :loading="loading" v-model:pagination="pagination" :rows-per-page-options="[10, 20, 50]">
       <template #body-cell-user_name="props">
         <q-td :props="props">
           <span class="text-weight-medium">{{ props.row.user_name }}</span>
