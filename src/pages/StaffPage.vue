@@ -110,7 +110,10 @@ const columns = [
 async function loadStaff() {
   loading.value = true;
   try {
-    staff.value = await server.staff();
+    const all = await server.staff();
+    // Desktop is branch-scoped: show only the signed-in 센터's staff.
+    const myBranch = session.me?.branch_id;
+    staff.value = myBranch ? all.filter((s) => s.branch_id === myBranch) : all;
   } catch (e: any) {
     $q.notify({ type: "negative", message: `직원 목록을 불러오지 못했습니다: ${e?.message ?? e}` });
   } finally {

@@ -198,8 +198,12 @@ async function loadSchedule() {
 async function loadStaffList() {
   try {
     const users = await server.staff();
+    // Branch-scoped: only this 센터's rosterable workers.
+    const myBranch = session.me?.branch_id;
     staffList.value = users
-      .filter(u => !u.deactivated_at && ["caregiver", "nurse", "branch_manager"].includes(u.role))
+      .filter(u => !u.deactivated_at
+        && ["caregiver", "nurse", "branch_manager"].includes(u.role)
+        && (!myBranch || u.branch_id === myBranch))
       .map(u => ({ label: u.full_name, value: u.id, role: u.role }))
       .sort((a, b) => a.label.localeCompare(b.label));
   } catch (_) { /* best effort */ }
