@@ -54,16 +54,31 @@ async function load() {
 watch([statusFilter, pageSize], () => { page.value = 1; load(); });
 watch(page, load);
 
-async function decide(r: Row, status: "approved" | "rejected") {
+async function doDecide(r: Row, status: "approved" | "rejected", note?: string) {
   acting.value = r.id;
   try {
-    await server.decideLeave(r.id, status);
+    await server.decideLeave(r.id, status, note);
     $q.notify({ type: "positive", message: status === "approved" ? "승인되었습니다." : "반려되었습니다." });
     await load();
   } catch (e: any) {
     $q.notify({ type: "negative", message: `처리 실패: ${e?.message ?? e}` });
   } finally {
     acting.value = null;
+  }
+}
+function decide(r: Row, status: "approved" | "rejected") {
+  if (status === "rejected") {
+    // 반려 사유를 입력 — 요양보호사가 태블릿에서 읽고 협의합니다.
+    $q.dialog({
+      title: "반려 사유",
+      message: `${r.user_name}님에게 전달할 반려 사유를 입력하세요.`,
+      prompt: { model: "", type: "textarea", isValid: (v: string) => v.trim().length > 0 },
+      cancel: { label: "취소", flat: true },
+      ok: { label: "반려", color: "negative", unelevated: true },
+      persistent: true,
+    }).onOk((note: string) => doDecide(r, "rejected", note.trim()));
+  } else {
+    doDecide(r, "approved");
   }
 }
 

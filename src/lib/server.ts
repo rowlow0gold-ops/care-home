@@ -325,10 +325,10 @@ export const server = {
       total: number; page: number; page_size: number;
     }>(`/api/v1/leave-requests/paged?${qs.toString()}`);
   },
-  decideLeave(id: string, status: "approved" | "rejected") {
+  decideLeave(id: string, status: "approved" | "rejected", note?: string) {
     return fetchJson(`/api/v1/leave-requests/${id}/decide`, {
       method: "PATCH",
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, note: note ?? null }),
     });
   },
   // HQ-style paged org list (이름/소속/직책/고용/경력 …). Branch-scoped server-side.

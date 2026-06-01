@@ -410,6 +410,13 @@ function openNewType() {
   newType.value = { label: "", start: "07:00", end: "15:00", hours: 8 };
   showNewType.value = true;
 }
+function hoursBetween(start: string, end: string): number {
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins <= 0) mins += 24 * 60; // wraps past midnight
+  return Math.round((mins / 60) * 10) / 10;
+}
 async function addNewType() {
   const t = newType.value;
   if (!t.label.trim() || !/^\d{2}:\d{2}$/.test(t.start) || !/^\d{2}:\d{2}$/.test(t.end)) {
@@ -420,7 +427,10 @@ async function addNewType() {
     $q.notify({ type: "negative", message: "같은 이름의 근무 유형이 이미 있습니다." });
     return;
   }
-  customPresets.value = [...customPresets.value, { ...t, label: t.label.trim() }];
+  // 시간은 시작/종료로 자동 계산.
+  customPresets.value = [...customPresets.value, {
+    label: t.label.trim(), start: t.start, end: t.end, hours: hoursBetween(t.start, t.end),
+  }];
   await savePresets();
   showNewType.value = false;
   $q.notify({ type: "positive", message: "근무 유형이 추가되었습니다." });
@@ -938,7 +948,6 @@ function deleteShift(entry: ScheduleEntry) {
           <div class="row q-gutter-sm">
             <q-input v-model="newType.start" label="시작" outlined dense class="col" hint="HH:MM" mask="##:##" />
             <q-input v-model="newType.end" label="종료" outlined dense class="col" hint="HH:MM" mask="##:##" />
-            <q-input v-model.number="newType.hours" label="시간" type="number" outlined dense class="col" />
           </div>
         </q-card-section>
         <q-card-actions align="right" class="q-px-md q-pb-md">
