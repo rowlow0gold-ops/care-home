@@ -21,6 +21,7 @@ const router = createRouter({
         { path: "residents/:id", name: "resident-detail", component: () => import("@/pages/ResidentDetailPage.vue"), meta: { minRole: 1 } },
         { path: "schedule",      name: "schedule",      component: () => import("@/pages/SchedulePage.vue"),     meta: { minRole: 1 } },
         { path: "staff",         name: "staff",         component: () => import("@/pages/StaffPage.vue"),        meta: { minRole: 3 } },
+        { path: "staff/:id",     name: "staff-detail",  component: () => import("@/pages/StaffDetailPage.vue"),  meta: { minRole: 3 } },
         { path: "settings",      name: "settings",      component: () => import("@/pages/SettingsPage.vue"),     meta: { minRole: 3 } },
       ],
     },

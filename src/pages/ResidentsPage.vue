@@ -153,7 +153,7 @@ onMounted(load);
       </div>
       <div class="col-auto q-gutter-sm">
         <q-btn outline color="primary" icon="o_download" label="내보내기" :loading="exporting" @click="exportXlsx" />
-        <q-btn color="primary" icon="o_person_add" label="어르신 등록" unelevated
+        <q-btn v-if="session.canCreate" color="primary" icon="o_person_add" label="어르신 등록" unelevated
                @click="() => { addForm = emptyAdd(); showAdd = true; }" />
       </div>
     </div>

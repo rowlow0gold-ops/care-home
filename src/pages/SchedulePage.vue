@@ -8,7 +8,10 @@ const $q = useQuasar();
 const session = useServerSessionStore();
 
 // ── Role helpers (server permission ladder) ─────────────────────────────────
-const isManager = computed(() => session.hasRole("branch_manager"));
+// 접수(create only) vs 행정+(full CRUD)
+const canCreate = computed(() => session.canCreate);
+const canEdit = computed(() => session.canEdit);
+const canDelete = computed(() => session.canDelete);
 
 // ── View mode ─────────────────────────────────────────────────────────────────
 const viewMode = ref<"week" | "month">("week");
@@ -412,7 +415,10 @@ async function onPointerUp(e: PointerEvent) {
 }
 
 function startDrag(e: PointerEvent, state: DragState, label: string, color: string) {
-  if (!isManager.value) return;
+  if (!state) return;
+  // moving an existing entry = edit; dragging a preset = create.
+  const allowed = state.kind === "entry" ? canEdit.value : canCreate.value;
+  if (!allowed) return;
   e.preventDefault();
   _drag           = state;
   isDragging.value = true;
@@ -439,7 +445,7 @@ function applyEditPreset() {
   }
 }
 function openEditDialog(entry: ScheduleEntry) {
-  if (!isManager.value) return;
+  if (!canEdit.value) return;
   editingId.value      = entry.id;
   editingStaffId.value = entry.staff_id;
   const matched = SHIFT_PRESETS.find(
@@ -511,7 +517,7 @@ async function deleteShift(entry: ScheduleEntry) {
       <div class="col">
         <div class="text-h5 text-weight-bold">근무일정</div>
         <div class="text-caption text-grey-6">
-          {{ isManager ? "직원 근무 일정 관리" : "직원 근무 일정 (읽기 전용)" }}
+          {{ canCreate ? "직원 근무 일정 관리" : "직원 근무 일정 (읽기 전용)" }}
         </div>
       </div>
 
@@ -526,7 +532,7 @@ async function deleteShift(entry: ScheduleEntry) {
     </div>
 
     <!-- Drag palette (managers, week view only) -->
-    <div v-if="isManager && viewMode === 'week'" class="drag-palette q-mb-md">
+    <div v-if="canCreate && viewMode === 'week'" class="drag-palette q-mb-md">
       <div class="text-caption text-grey-6 q-mb-sm">
         <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs" />근무 유형을 셀로 드래그하여 배정하세요
       </div>
@@ -607,19 +613,19 @@ async function deleteShift(entry: ScheduleEntry) {
                 <div
                   v-for="entry in cellEntries(staff.value, date)" :key="entry.id"
                   class="shift-chip"
-                  :class="[`shift-chip--${shiftColor(entry)}`, { 'shift-chip--clickable': isManager, 'shift-chip--dropped': droppedId === entry.id }]"
-                  @pointerdown.stop="isManager && startDrag($event, { kind: 'entry', id: entry.id }, shiftLabel(entry), shiftColor(entry))"
+                  :class="[`shift-chip--${shiftColor(entry)}`, { 'shift-chip--clickable': canEdit, 'shift-chip--dropped': droppedId === entry.id }]"
+                  @pointerdown.stop="canEdit && startDrag($event, { kind: 'entry', id: entry.id }, shiftLabel(entry), shiftColor(entry))"
                   @click.stop="openEditDialog(entry)"
                 >
                   <span class="shift-time">{{ shiftLabel(entry) }}</span>
-                  <div v-if="isManager" class="shift-actions">
-                    <q-btn flat round dense icon="o_edit"  size="xs" class="shift-edit"   @click.stop="openEditDialog(entry)" />
-                    <q-btn flat round dense icon="o_close" size="xs" class="shift-delete" @click.stop="deleteShift(entry)" />
+                  <div v-if="canEdit || canDelete" class="shift-actions">
+                    <q-btn v-if="canEdit" flat round dense icon="o_edit"  size="xs" class="shift-edit"   @click.stop="openEditDialog(entry)" />
+                    <q-btn v-if="canDelete" flat round dense icon="o_close" size="xs" class="shift-delete" @click.stop="deleteShift(entry)" />
                   </div>
                   <q-tooltip v-if="entry.notes">{{ entry.notes }}</q-tooltip>
                 </div>
                 <q-btn
-                  v-if="isManager"
+                  v-if="canCreate"
                   flat round dense icon="o_add" size="xs" color="grey-5"
                   class="add-btn"
                   @click="openAddForCell(staff.value, date)"
@@ -668,14 +674,14 @@ async function deleteShift(entry: ScheduleEntry) {
               <div
                 v-if="isExpanded(date) || ei < 3"
                 class="month-shift-bar"
-                :class="[`shift-chip--${shiftColor(entry)}`, { 'shift-chip--clickable': isManager, 'shift-chip--dropped': droppedId === entry.id }]"
-                @pointerdown.stop="isManager && startDrag($event, { kind: 'entry', id: entry.id }, shiftLabel(entry), shiftColor(entry))"
+                :class="[`shift-chip--${shiftColor(entry)}`, { 'shift-chip--clickable': canEdit, 'shift-chip--dropped': droppedId === entry.id }]"
+                @pointerdown.stop="canEdit && startDrag($event, { kind: 'entry', id: entry.id }, shiftLabel(entry), shiftColor(entry))"
                 @click.stop="openEditDialog(entry)"
               >
                 <span class="month-shift-name">{{ entry.staff_name.split(' ')[0] }}</span>
                 <span class="month-shift-time">{{ entry.shift_start }}</span>
                 <q-btn
-                  v-if="isManager"
+                  v-if="canDelete"
                   flat round dense icon="o_close" size="xs"
                   class="shift-delete month-delete"
                   @click.stop="deleteShift(entry)"

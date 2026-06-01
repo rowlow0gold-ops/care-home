@@ -83,10 +83,18 @@ export const useServerSessionStore = defineStore("server-session", () => {
 
   function canAccess(page: string): boolean {
     // Detail routes inherit their list page's permission.
-    const key = page === "resident-detail" ? "residents" : page;
+    const key = page === "resident-detail" ? "residents" : page === "staff-detail" ? "staff" : page;
     const a = allowedPages();
     return a === ALL || a.includes(key);
   }
+
+  // ── Action-level CRUD by job title ────────────────────────────────────────
+  //   접수(receptionist): Create + Read only.
+  //   행정(administrator) / 시설장 / 본사 / IT: full CRUD.
+  const isReceptionist = computed(() => me.value?.position === "receptionist");
+  const canCreate = computed(() => isLoggedIn.value);
+  const canEdit = computed(() => isLoggedIn.value && !isReceptionist.value);
+  const canDelete = computed(() => isLoggedIn.value && !isReceptionist.value);
 
   /** First page the user is allowed to see — used as the post-login landing. */
   function firstAllowed(): string {
@@ -108,6 +116,7 @@ export const useServerSessionStore = defineStore("server-session", () => {
 
   return {
     me, hydrating, isLoggedIn, role, branchName, tenantName, positionLabel,
+    canCreate, canEdit, canDelete,
     hydrate, login, logout, hasRole, canAccess, firstAllowed,
   };
 });

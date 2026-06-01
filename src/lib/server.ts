@@ -288,6 +288,9 @@ export const server = {
       `/api/v1/org/paged?${qs.toString()}`,
     );
   },
+  staffOne(id: string) {
+    return fetchJson<OrgPerson>(`/api/v1/staff/${id}`);
+  },
   createStaff(payload: {
     email: string;
     full_name: string;

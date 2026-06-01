@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { useRouter } from "vue-router";
 import { useQuasar } from "quasar";
 import { server, type OrgPerson } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
+const router = useRouter();
 const session = useServerSessionStore();
 
-const canCreate = computed(() => session.hasRole("branch_manager"));
-const canAdmin = computed(() => session.hasRole("hq"));
+const canCreate = computed(() => session.canCreate);
+const canEdit = computed(() => session.canEdit);
+const canDelete = computed(() => session.canDelete);
+function openDetail(p: OrgPerson) { router.push(`/staff/${p.id}`); }
 
 // ── Position / employment options (server enums) ────────────────────────────
 const POSITION_OPTIONS = [
@@ -249,6 +253,8 @@ onMounted(load);
       :loading="loading"
       hide-pagination
       :rows-per-page-options="[0]"
+      @row-click="(_e, r) => openDetail(r)"
+      :class="rows.length ? 'cursor-pointer-rows' : ''"
     >
       <template #body-cell-full_name="props">
         <q-td :props="props"><span class="text-weight-medium">{{ props.row.full_name }}</span></q-td>
@@ -264,11 +270,9 @@ onMounted(load);
       </template>
       <template #body-cell-actions="props">
         <q-td :props="props" class="text-center">
-          <template v-if="canAdmin">
-            <q-btn flat round dense icon="o_edit" color="primary" @click="openEdit(props.row)"><q-tooltip>수정</q-tooltip></q-btn>
-            <q-btn flat round dense icon="o_person_off" color="negative" @click="confirmDeactivate(props.row)"><q-tooltip>비활성화</q-tooltip></q-btn>
-          </template>
-          <span v-else class="text-caption text-grey-4">—</span>
+          <q-btn v-if="canEdit" flat round dense icon="o_edit" color="primary" @click.stop="openEdit(props.row)"><q-tooltip>수정</q-tooltip></q-btn>
+          <q-btn v-if="canDelete" flat round dense icon="o_person_off" color="negative" @click.stop="confirmDeactivate(props.row)"><q-tooltip>비활성화</q-tooltip></q-btn>
+          <q-icon name="o_chevron_right" color="grey-5" />
         </q-td>
       </template>
       <template #no-data>
@@ -344,3 +348,8 @@ onMounted(load);
     </q-dialog>
   </q-page>
 </template>
+
+<style scoped>
+.cursor-pointer-rows :deep(tbody tr) { cursor: pointer; }
+.cursor-pointer-rows :deep(tbody tr:hover td) { background: #f0f9ff; }
+</style>

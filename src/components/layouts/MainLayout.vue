@@ -22,7 +22,7 @@ interface NavGroup { heading: string; items: NavItem[]; }
 
 const navGroups: NavGroup[] = [
   {
-    heading: "",
+    heading: "케어",
     items: [
       { to: "/residents", key: "residents", icon: "o_people", label: "어르신" },
     ],
