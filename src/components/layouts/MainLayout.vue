@@ -88,9 +88,6 @@ async function handleLogout() {
         >
           {{ myRoleLabel }}
         </q-chip>
-        <q-btn flat round dense icon="o_logout" @click="handleLogout">
-          <q-tooltip>로그아웃</q-tooltip>
-        </q-btn>
       </q-toolbar>
     </q-header>
 
@@ -102,42 +99,55 @@ async function handleLogout() {
       show-if-above
       bordered
     >
-      <!-- User info -->
-      <div v-if="!miniMode" class="q-pa-md sidebar-user">
-        <div class="text-weight-semibold text-white">{{ session.me?.name }}</div>
-        <div class="text-caption sidebar-sub">{{ session.me?.email }}</div>
-      </div>
-      <q-separator dark v-if="!miniMode" />
+      <div class="column full-height">
+        <!-- User info -->
+        <div v-if="!miniMode" class="q-pa-md sidebar-user">
+          <div class="text-weight-semibold text-white">{{ session.me?.name }}</div>
+          <div class="text-caption sidebar-sub">{{ session.me?.email }}</div>
+        </div>
+        <q-separator dark v-if="!miniMode" />
 
-      <q-list padding>
-        <template v-for="(group, gi) in visibleGroups" :key="gi">
-          <q-separator v-if="gi > 0" dark spaced="sm" class="q-mx-md" />
-          <q-item-label
-            v-if="group.heading && !miniMode"
-            header
-            class="sidebar-group-label"
-          >
-            {{ group.heading }}
-          </q-item-label>
-          <q-item
-            v-for="item in group.items"
-            :key="item.to"
-            clickable
-            v-ripple
-            :to="item.to"
-            active-class="sidebar-active"
-            class="sidebar-item"
-          >
-            <q-item-section avatar>
-              <q-icon :name="item.icon" />
-            </q-item-section>
-            <q-item-section v-if="!miniMode">{{ item.label }}</q-item-section>
-            <q-tooltip v-if="miniMode" anchor="center right" self="center left">
-              {{ item.label }}
-            </q-tooltip>
-          </q-item>
-        </template>
-      </q-list>
+        <!-- Nav (scrolls) -->
+        <q-scroll-area class="col">
+          <q-list padding>
+            <template v-for="(group, gi) in visibleGroups" :key="gi">
+              <q-separator v-if="gi > 0" dark spaced="sm" class="q-mx-md" />
+              <q-item-label
+                v-if="group.heading && !miniMode"
+                header
+                class="sidebar-group-label"
+              >
+                {{ group.heading }}
+              </q-item-label>
+              <q-item
+                v-for="item in group.items"
+                :key="item.to"
+                clickable
+                v-ripple
+                :to="item.to"
+                active-class="sidebar-active"
+                class="sidebar-item"
+              >
+                <q-item-section avatar>
+                  <q-icon :name="item.icon" />
+                </q-item-section>
+                <q-item-section v-if="!miniMode">{{ item.label }}</q-item-section>
+                <q-tooltip v-if="miniMode" anchor="center right" self="center left">
+                  {{ item.label }}
+                </q-tooltip>
+              </q-item>
+            </template>
+          </q-list>
+        </q-scroll-area>
+
+        <!-- Logout pinned at the bottom (HQ style) -->
+        <q-separator dark />
+        <q-item clickable v-ripple class="sidebar-item q-my-sm" @click="handleLogout">
+          <q-item-section avatar><q-icon name="o_logout" /></q-item-section>
+          <q-item-section v-if="!miniMode">로그아웃</q-item-section>
+          <q-tooltip v-if="miniMode" anchor="center right" self="center left">로그아웃</q-tooltip>
+        </q-item>
+      </div>
     </q-drawer>
 
     <!-- Main content -->
