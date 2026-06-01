@@ -290,6 +290,18 @@ export const server = {
   staff() {
     return fetchJson<StaffMember[]>("/api/v1/staff");
   },
+  // 식단표 (meal plan document) — desk uploads a file; tablet workers view latest.
+  uploadMealPlan(file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetchJson<{ id: string; filename: string }>("/api/v1/meal-plan", { method: "POST", body: fd });
+  },
+  latestMealPlan() {
+    return fetchJson<{ id: string; filename: string; mime_type: string; uploaded_at: string; data_url: string } | null>(
+      "/api/v1/meal-plan",
+    );
+  },
+
   // 휴가/연차 — branch_manager+ sees the whole branch's requests (incl. tablet-sent day-offs).
   leaveRequests(status?: string) {
     const qs = status ? `?status=${encodeURIComponent(status)}` : "";
