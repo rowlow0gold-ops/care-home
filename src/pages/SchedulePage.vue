@@ -52,6 +52,24 @@ const DAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
 const todayStr   = computed(() => localDateStr(new Date()));
 function isToday(d: Date) { return localDateStr(d) === todayStr.value; }
 
+// ── 빨간날 (holidays + weekends) ────────────────────────────────────────────
+const holidayMap = ref<Map<string, string>>(new Map());
+const loadedYears = new Set<number>();
+async function loadHolidays(year: number) {
+  if (loadedYears.has(year)) return;
+  loadedYears.add(year);
+  try {
+    const hs = await server.holidays(year);
+    for (const h of hs) holidayMap.value.set(h.locdate, h.name);
+    holidayMap.value = new Map(holidayMap.value); // trigger reactivity
+  } catch { /* holidays optional */ }
+}
+function holidayName(d: Date): string | null { return holidayMap.value.get(localDateStr(d)) ?? null; }
+function isRedDay(d: Date): boolean {
+  const g = d.getDay();
+  return g === 0 || g === 6 || holidayMap.value.has(localDateStr(d));
+}
+
 // ── Week navigation ───────────────────────────────────────────────────────────
 const currentMonday = ref<Date>(weekMonday(new Date()));
 const weekDates = computed<Date[]>(() =>
@@ -193,6 +211,8 @@ async function loadSchedule() {
   try {
     const start = viewMode.value === "week" ? weekStartStr.value : monthStartStr.value;
     const end   = viewMode.value === "week" ? weekEndStr.value   : monthEndStr.value;
+    loadHolidays(Number(start.slice(0, 4)));
+    loadHolidays(Number(end.slice(0, 4)));
     const rows = await server.roster(start, end, selectedTeam.value || undefined);
     entries.value = rows.map(r => ({
       id:          r.id,
@@ -633,12 +653,13 @@ async function deleteShift(entry: ScheduleEntry) {
               <th class="staff-col">직원</th>
               <th
                 v-for="(date, di) in weekDates" :key="di"
-                :class="['day-col', { 'today-col': isToday(date) }]"
+                :class="['day-col', { 'today-col': isToday(date), 'red-col': isRedDay(date) }]"
               >
-                <div class="day-label">{{ DAY_LABELS[di] }}</div>
-                <div class="day-date" :class="isToday(date) ? 'text-primary text-weight-bold' : 'text-grey-6'">
+                <div class="day-label" :class="{ 'text-negative': isRedDay(date) }">{{ DAY_LABELS[di] }}</div>
+                <div class="day-date" :class="isToday(date) ? 'text-primary text-weight-bold' : (isRedDay(date) ? 'text-negative' : 'text-grey-6')">
                   {{ date.getMonth() + 1 }}/{{ date.getDate() }}
                 </div>
+                <q-tooltip v-if="holidayName(date)">{{ holidayName(date) }}</q-tooltip>
               </th>
               <th class="hours-col">주간 시간</th>
             </tr>
@@ -719,8 +740,9 @@ async function deleteShift(entry: ScheduleEntry) {
             :data-cell-key="dropKey(null, date)"
             :data-date="localDateStr(date)"
           >
-            <div class="month-day-num" :class="isToday(date) ? 'today-badge' : ''">
+            <div class="month-day-num" :class="isToday(date) ? 'today-badge' : (isRedDay(date) ? 'text-negative text-weight-bold' : '')">
               {{ date.getDate() }}
+              <q-tooltip v-if="holidayName(date)">{{ holidayName(date) }}</q-tooltip>
             </div>
 
             <template v-for="(entry, ei) in dayEntries(date)" :key="entry.id">
@@ -888,6 +910,7 @@ async function deleteShift(entry: ScheduleEntry) {
 .day-col    { min-width: 110px; text-align: center; }
 .hours-col  { width: 80px; text-align: center; }
 .today-col  { background: #eff6ff; }
+.red-col    { background: #fef2f2; }
 .today-bg   { background: #f0f9ff; }
 .day-label  { font-size: 0.78rem; font-weight: 600; }
 .day-date   { font-size: 0.72rem; }

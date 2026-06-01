@@ -392,6 +392,11 @@ export const server = {
   teams() {
     return fetchJson<Team[]>("/api/v1/teams");
   },
+  holidays(year: number) {
+    return fetchJson<Array<{ locdate: string; name: string; is_holiday: boolean }>>(
+      `/api/v1/holidays?year=${year}`,
+    );
+  },
   assignTeam(userId: string, teamId: string | null) {
     return fetchJson(`/api/v1/staff/${userId}/team`, {
       method: "PATCH",
