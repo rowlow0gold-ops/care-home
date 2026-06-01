@@ -138,51 +138,60 @@ const monthGrid = computed<Date[][]>(() => {
   return weeks;
 });
 
-// ── Data ──────────────────────────────────────────────────────────────────────
-const entries   = ref<ScheduleEntry[]>([]);
-const loading   = ref(false);
-const staffList = ref<StaffOption[]>([]);
+// ── Data + Draft overlay ──────────────────────────────────────────────────────
+// `serverRows` = last fetch. The draft is a PERSISTENT overlay (creates/updates/
+// deletes) that survives team/week switches; `entries` is rebuilt = server+overlay.
+const serverRows = ref<ScheduleEntry[]>([]);
+const entries    = ref<ScheduleEntry[]>([]);
+const loading    = ref(false);
+const staffList  = ref<StaffOption[]>([]);
+const saving     = ref(false);
 
-// ── Draft mode (저장/되돌리기/비우기) ──────────────────────────────────────────
-// Edits stay local in `entries`; nothing hits the server until 저장.
-const savedSnapshot = ref<ScheduleEntry[]>([]);
-const dirty = ref(false);
-const saving = ref(false);
+const pendingCreates = ref<ScheduleEntry[]>([]);
+const pendingUpdates = ref<Map<string, ScheduleEntry>>(new Map());
+const pendingDeletes = ref<Set<string>>(new Set());
+const dirty = computed(() =>
+  pendingCreates.value.length > 0 || pendingUpdates.value.size > 0 || pendingDeletes.value.size > 0,
+);
 let tempSeq = 0;
 function tempId() { return `new-${++tempSeq}`; }
 function isNew(id: string) { return id.startsWith("new-"); }
-function markDirty() { dirty.value = true; }
 
-function shiftChanged(a: ScheduleEntry, b: ScheduleEntry) {
-  return a.staff_id !== b.staff_id || a.shift_date !== b.shift_date ||
-    a.shift_start !== b.shift_start || a.shift_end !== b.shift_end ||
-    a.shift_hours !== b.shift_hours || (a.notes ?? "") !== (b.notes ?? "");
+// Rebuild the visible `entries` from the last server fetch + the overlay.
+function rebuild() {
+  const start = viewMode.value === "week" ? weekStartStr.value : monthStartStr.value;
+  const end   = viewMode.value === "week" ? weekEndStr.value   : monthEndStr.value;
+  const base = serverRows.value
+    .filter((e) => !pendingDeletes.value.has(e.id))
+    .map((e) => pendingUpdates.value.get(e.id) ?? e);
+  const creates = pendingCreates.value.filter((c) => c.shift_date >= start && c.shift_date <= end);
+  entries.value = [...base, ...creates];
 }
 
 async function saveDraft() {
-  if (saving.value) return;
+  if (saving.value || !dirty.value) return;
   saving.value = true;
   try {
-    const savedById = new Map(savedSnapshot.value.map((e) => [e.id, e]));
-    const draftIds = new Set(entries.value.map((e) => e.id));
-    // creates + updates
-    for (const e of entries.value) {
-      const payload = {
-        user_id: e.staff_id, shift_date: e.shift_date,
-        shift_start: e.shift_start, shift_end: e.shift_end,
-        shift_hours: e.shift_hours, notes: e.notes ?? null,
-      };
-      if (isNew(e.id)) {
-        await server.createRoster(payload);
-      } else {
-        const orig = savedById.get(e.id);
-        if (orig && shiftChanged(orig, e)) await server.updateRoster(e.id, payload);
+    for (const c of pendingCreates.value) {
+      await server.createRoster({
+        user_id: c.staff_id, shift_date: c.shift_date,
+        shift_start: c.shift_start, shift_end: c.shift_end,
+        shift_hours: c.shift_hours, notes: c.notes ?? null,
+      });
+    }
+    for (const [id, e] of pendingUpdates.value) {
+      if (!isNew(id)) {
+        await server.updateRoster(id, {
+          user_id: e.staff_id, shift_date: e.shift_date,
+          shift_start: e.shift_start, shift_end: e.shift_end,
+          shift_hours: e.shift_hours, notes: e.notes ?? null,
+        });
       }
     }
-    // deletes (in saved baseline but removed from draft)
-    for (const e of savedSnapshot.value) {
-      if (!isNew(e.id) && !draftIds.has(e.id)) await server.deleteRoster(e.id);
+    for (const id of pendingDeletes.value) {
+      if (!isNew(id)) await server.deleteRoster(id);
     }
+    clearOverlay();
     $q.notify({ type: "positive", message: "근무일정을 저장했습니다." });
     await loadSchedule();
   } catch (e: any) {
@@ -191,16 +200,28 @@ async function saveDraft() {
     saving.value = false;
   }
 }
+function clearOverlay() {
+  pendingCreates.value = [];
+  pendingUpdates.value = new Map();
+  pendingDeletes.value = new Set();
+}
 function rollbackDraft() {
-  entries.value = savedSnapshot.value.map((e) => ({ ...e }));
-  dirty.value = false;
+  clearOverlay();
+  rebuild();
   $q.notify({ type: "info", message: "변경사항을 되돌렸습니다." });
 }
 function clearDraft() {
   $q.dialog({
-    title: "비우기", message: "현재 보이는 기간의 근무를 모두 비웁니다. (저장 시 반영)",
-    cancel: { label: "취소", flat: true }, ok: { label: "비우기", color: "negative", unelevated: true }, persistent: true,
-  }).onOk(() => { entries.value = []; dirty.value = true; });
+    title: "클리어", message: "현재 보이는 기간의 근무를 모두 비웁니다. (저장 시 반영)",
+    cancel: { label: "취소", flat: true }, ok: { label: "클리어", color: "negative", unelevated: true }, persistent: true,
+  }).onOk(() => {
+    for (const e of entries.value) {
+      if (isNew(e.id)) pendingCreates.value = pendingCreates.value.filter((c) => c.id !== e.id);
+      else pendingDeletes.value.add(e.id);
+    }
+    pendingDeletes.value = new Set(pendingDeletes.value);
+    rebuild();
+  });
 }
 
 // ── Teams (조) — "split by shift" filter ───────────────────────────────────────
@@ -273,7 +294,7 @@ async function loadSchedule() {
     loadHolidays(Number(start.slice(0, 4)));
     loadHolidays(Number(end.slice(0, 4)));
     const rows = await server.roster(start, end, selectedTeam.value || undefined);
-    entries.value = rows.map(r => ({
+    serverRows.value = rows.map(r => ({
       id:          r.id,
       staff_id:    r.user_id,
       staff_name:  r.staff_name,
@@ -283,9 +304,7 @@ async function loadSchedule() {
       shift_hours: r.shift_hours,
       notes:       r.notes,
     }));
-    // Draft baseline — edits stay local until 저장.
-    savedSnapshot.value = entries.value.map(e => ({ ...e }));
-    dirty.value = false;
+    rebuild(); // re-apply the persistent draft overlay on top of the fetch
   } catch (e: any) {
     $q.notify({ type: "negative", message: `근무일정을 불러오지 못했습니다: ${e?.message ?? e}` });
   } finally {
@@ -416,11 +435,22 @@ function staffNameById(id: string): string {
     ?? "";
 }
 function addLocal(staffId: string, date: string, start: string, end: string, hours: number, notes: string | null) {
-  entries.value.push({
+  pendingCreates.value = [...pendingCreates.value, {
     id: tempId(), staff_id: staffId, staff_name: staffNameById(staffId),
     shift_date: date, shift_start: start, shift_end: end, shift_hours: hours, notes,
-  });
-  markDirty();
+  }];
+  rebuild();
+}
+// Record an edit/move of an existing or pending entry into the overlay.
+function applyEntryEdit(entry: ScheduleEntry, patch: Partial<ScheduleEntry>) {
+  const updated = { ...entry, ...patch };
+  if (isNew(entry.id)) {
+    pendingCreates.value = pendingCreates.value.map((c) => (c.id === entry.id ? updated : c));
+  } else {
+    pendingUpdates.value.set(entry.id, updated);
+    pendingUpdates.value = new Map(pendingUpdates.value);
+  }
+  rebuild();
 }
 function submitAdd() {
   if (!form.value.staff_id || !form.value.shift_date) {
@@ -495,10 +525,7 @@ async function onPointerUp(e: PointerEvent) {
     const newDate    = localDateStr(date);
     const newStaffId = staffId ?? entry.staff_id;
     if (entry.staff_id === newStaffId && entry.shift_date === newDate) return;
-    entry.staff_id = newStaffId;
-    entry.staff_name = staffNameById(newStaffId) || entry.staff_name;
-    entry.shift_date = newDate;
-    markDirty();
+    applyEntryEdit(entry, { staff_id: newStaffId, staff_name: staffNameById(newStaffId) || entry.staff_name, shift_date: newDate });
     await nextTick();
     droppedId.value = entry.id;
     setTimeout(() => { droppedId.value = null; }, 450);
@@ -560,12 +587,13 @@ function submitEdit() {
   if (!editingId.value || !editingStaffId.value) return;
   const entry = entries.value.find((e) => e.id === editingId.value);
   if (entry) {
-    entry.shift_date  = editForm.value.shift_date;
-    entry.shift_start = editForm.value.shift_start;
-    entry.shift_end   = editForm.value.shift_end;
-    entry.shift_hours = editForm.value.shift_hours;
-    entry.notes       = editForm.value.notes || null;
-    markDirty();
+    applyEntryEdit(entry, {
+      shift_date:  editForm.value.shift_date,
+      shift_start: editForm.value.shift_start,
+      shift_end:   editForm.value.shift_end,
+      shift_hours: editForm.value.shift_hours,
+      notes:       editForm.value.notes || null,
+    });
   }
   showEdit.value = false;
 }
@@ -580,10 +608,16 @@ function toggleExpand(date: Date) {
 }
 function isExpanded(date: Date) { return expandedDays.value.has(localDateStr(date)); }
 
-// ── Delete shift (local) ────────────────────────────────────────────────────
+// ── Delete shift (local overlay) ────────────────────────────────────────────
 function deleteShift(entry: ScheduleEntry) {
-  entries.value = entries.value.filter((e) => e.id !== entry.id);
-  markDirty();
+  if (isNew(entry.id)) {
+    pendingCreates.value = pendingCreates.value.filter((c) => c.id !== entry.id);
+  } else {
+    pendingUpdates.value.delete(entry.id);
+    pendingDeletes.value.add(entry.id);
+    pendingDeletes.value = new Set(pendingDeletes.value);
+  }
+  rebuild();
 }
 </script>
 
