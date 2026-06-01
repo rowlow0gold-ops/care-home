@@ -39,13 +39,11 @@ const navGroups: NavGroup[] = [
     heading: "서비스",
     items: [
       { to: "/notifications", key: "notifications", icon: "o_mail",        label: "알림" },
-      { to: "/reports",       key: "reports",       icon: "o_description", label: "보고서" },
     ],
   },
   {
     heading: "관리",
     items: [
-      { to: "/accounting", key: "accounting", icon: "o_account_balance", label: "정산" },
       { to: "/settings",   key: "settings",   icon: "o_settings",        label: "설정" },
     ],
   },

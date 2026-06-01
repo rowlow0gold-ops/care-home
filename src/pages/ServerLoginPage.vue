@@ -99,12 +99,10 @@ const session = useServerSessionStore();
 const router = useRouter();
 const $q = useQuasar();
 
-// Demo accounts — one per hub job-title role. All share password admin1234.
+// Demo accounts — 서울광역센터 행정 / 접수. All share password admin1234.
 const demoAccounts = [
-  { label: "시설장", email: "manager.seoul-hub@demo.com" },
   { label: "행정", email: "admin.seoul-hub@demo.com" },
   { label: "접수", email: "reception.seoul-hub@demo.com" },
-  { label: "IT 지원", email: "it.support@demo.com" },
 ];
 
 async function onLogin() {

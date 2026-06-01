@@ -66,7 +66,7 @@ export const useServerSessionStore = defineStore("server-session", () => {
   const POSITION_PAGES: Record<string, readonly string[] | typeof ALL> = {
     branch_manager: ALL,                                                   // 시설장 — everything
     it: ALL,                                                               // 본사 IT 지원 — everything
-    office_manager: ["residents", "schedule", "leave", "reports", "accounting", "settings"], // 행정
+    office_manager: ["residents", "schedule", "leave", "staff", "notifications", "settings"], // 행정
     receptionist:   ["residents", "schedule", "leave", "notifications", "settings"],          // 접수
   };
 
