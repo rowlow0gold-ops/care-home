@@ -79,15 +79,6 @@ async function handleLogout() {
         <q-toolbar-title class="text-weight-medium">
           케어닥 — {{ stationName }}
         </q-toolbar-title>
-        <q-chip
-          square
-          color="secondary"
-          text-color="white"
-          size="sm"
-          class="q-mr-sm"
-        >
-          {{ myRoleLabel }}
-        </q-chip>
       </q-toolbar>
     </q-header>
 
@@ -140,8 +131,11 @@ async function handleLogout() {
           </q-list>
         </q-scroll-area>
 
-        <!-- Logout pinned at the bottom (HQ style) -->
+        <!-- Role chip + logout pinned at the bottom-left (HQ style) -->
         <q-separator dark />
+        <div v-if="!miniMode" class="q-px-md q-pt-sm">
+          <q-chip square color="secondary" text-color="white" size="sm">{{ myRoleLabel }}</q-chip>
+        </div>
         <q-item clickable v-ripple class="sidebar-item q-my-sm" @click="handleLogout">
           <q-item-section avatar><q-icon name="o_logout" /></q-item-section>
           <q-item-section v-if="!miniMode">로그아웃</q-item-section>
