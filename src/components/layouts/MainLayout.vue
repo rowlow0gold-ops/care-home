@@ -37,8 +37,9 @@ const navGroups: NavGroup[] = [
     heading: "서비스",
     items: [
       { to: "/schedule", key: "schedule", icon: "o_calendar_month", label: "스케쥴러" },
-      { to: "/leave",     key: "leave", icon: "o_event_busy",   label: "휴가 승인" },
-      { to: "/meal-plan", key: "meals", icon: "o_restaurant",   label: "식단표" },
+      { to: "/leave",     key: "leave",   icon: "o_event_busy",   label: "휴가 승인" },
+      { to: "/meal-plan", key: "meals",   icon: "o_restaurant",   label: "식단표" },
+      { to: "/reports",   key: "reports", icon: "o_description",  label: "보고서" },
     ],
   },
   {
@@ -91,13 +92,6 @@ async function handleLogout() {
       bordered
     >
       <div class="column full-height">
-        <!-- User info -->
-        <div v-if="!miniMode" class="q-pa-md sidebar-user">
-          <div class="text-weight-semibold text-white">{{ session.me?.name }}</div>
-          <div class="text-caption sidebar-sub">{{ session.me?.email }}</div>
-        </div>
-        <q-separator dark v-if="!miniMode" />
-
         <!-- Nav (scrolls) -->
         <q-scroll-area class="col">
           <q-list padding>
@@ -131,10 +125,22 @@ async function handleLogout() {
           </q-list>
         </q-scroll-area>
 
-        <!-- Role chip + logout pinned at the bottom-left (HQ style) -->
+        <!-- User card + logout pinned at the bottom-left (HQ style) -->
         <q-separator dark />
-        <div v-if="!miniMode" class="q-px-md q-pt-sm">
-          <q-chip square color="secondary" text-color="white" size="sm">{{ myRoleLabel }}</q-chip>
+        <div v-if="!miniMode" class="sidebar-userbox q-pa-md">
+          <div class="row items-center no-wrap q-mb-xs">
+            <q-avatar size="34px" color="secondary" text-color="white">
+              {{ (session.me?.name ?? "?").slice(0, 1) }}
+            </q-avatar>
+            <div class="q-ml-sm ellipsis">
+              <div class="text-weight-semibold text-white ellipsis">{{ session.me?.name ?? "—" }}</div>
+              <div class="text-caption sidebar-sub ellipsis">{{ session.me?.email }}</div>
+            </div>
+          </div>
+          <div class="row items-center q-gutter-xs">
+            <q-chip square dense color="secondary" text-color="white" size="sm">{{ myRoleLabel }}</q-chip>
+            <span class="text-caption sidebar-sub ellipsis">{{ session.branchName ?? session.tenantName }}</span>
+          </div>
         </div>
         <q-item clickable v-ripple class="sidebar-item q-my-sm" @click="handleLogout">
           <q-item-section avatar><q-icon name="o_logout" /></q-item-section>
