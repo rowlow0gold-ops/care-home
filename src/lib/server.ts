@@ -311,6 +311,20 @@ export const server = {
       reason: string | null; status: "pending" | "approved" | "rejected" | "cancelled"; requested_at: string;
     }>>(`/api/v1/leave-requests${qs}`);
   },
+  leaveRequestsPaged(params: { status?: string; page?: number; page_size?: number }) {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status", params.status);
+    qs.set("page", String(params.page ?? 1));
+    qs.set("page_size", String(params.page_size ?? 20));
+    return fetchJson<{
+      items: Array<{
+        id: string; user_id: string; user_name: string; user_role: string;
+        leave_type: string; start_date: string; end_date: string; days: number;
+        reason: string | null; status: "pending" | "approved" | "rejected" | "cancelled"; requested_at: string;
+      }>;
+      total: number; page: number; page_size: number;
+    }>(`/api/v1/leave-requests/paged?${qs.toString()}`);
+  },
   decideLeave(id: string, status: "approved" | "rejected") {
     return fetchJson(`/api/v1/leave-requests/${id}/decide`, {
       method: "PATCH",

@@ -8,13 +8,17 @@ const $q = useQuasar();
 const session = useServerSessionStore();
 // Day-off approval is a desk task — both 행정 and 접수 (branch_manager) can decide.
 const canDecide = computed(() => session.hasRole("branch_manager"));
-const pagination = ref({ rowsPerPage: 20 });
 
-type Row = Awaited<ReturnType<typeof server.leaveRequests>>[number];
+type Row = Awaited<ReturnType<typeof server.leaveRequestsPaged>>["items"][number];
 const rows = ref<Row[]>([]);
 const loading = ref(false);
 const statusFilter = ref("pending");
 const acting = ref<string | null>(null);
+// server-side pagination
+const page = ref(1);
+const pageSize = ref(20);
+const total = ref(0);
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
 
 const statusOptions = [
   { label: "대기", value: "pending" },
@@ -34,14 +38,21 @@ function fmt(iso: string) { return new Date(iso).toLocaleString("ko-KR", { month
 async function load() {
   loading.value = true;
   try {
-    rows.value = await server.leaveRequests(statusFilter.value || undefined);
+    const res = await server.leaveRequestsPaged({
+      status: statusFilter.value || undefined,
+      page: page.value,
+      page_size: pageSize.value,
+    });
+    rows.value = res.items;
+    total.value = res.total;
   } catch (e: any) {
     $q.notify({ type: "negative", message: `휴가 신청을 불러오지 못했습니다: ${e?.message ?? e}` });
   } finally {
     loading.value = false;
   }
 }
-watch(statusFilter, load);
+watch([statusFilter, pageSize], () => { page.value = 1; load(); });
+watch(page, load);
 
 async function decide(r: Row, status: "approved" | "rejected") {
   acting.value = r.id;
@@ -83,7 +94,7 @@ onMounted(load);
       <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load" />
     </div>
 
-    <q-table :rows="rows" :columns="columns" row-key="id" flat bordered :loading="loading" v-model:pagination="pagination" :rows-per-page-options="[10, 20, 50]">
+    <q-table :rows="rows" :columns="columns" row-key="id" flat bordered :loading="loading" hide-pagination :rows-per-page-options="[0]">
       <template #body-cell-user_name="props">
         <q-td :props="props">
           <span class="text-weight-medium">{{ props.row.user_name }}</span>
@@ -118,5 +129,11 @@ onMounted(load);
         </div>
       </template>
     </q-table>
+
+    <div class="row items-center justify-end q-mt-md q-gutter-md">
+      <span class="text-caption text-grey-6">총 {{ total }}건</span>
+      <q-select v-model="pageSize" :options="[10, 20, 50]" dense outlined style="min-width:80px" />
+      <q-pagination v-model="page" :max="totalPages" :max-pages="7" boundary-numbers direction-links />
+    </div>
   </q-page>
 </template>
