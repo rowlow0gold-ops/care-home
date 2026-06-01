@@ -247,6 +247,17 @@ export const server = {
   staff() {
     return fetchJson<StaffMember[]>("/api/v1/staff");
   },
+  // HQ-style paged org list (이름/소속/직책/고용/경력 …). Branch-scoped server-side.
+  orgPaged(params: { q?: string; employment_type?: string; page?: number; page_size?: number }) {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.employment_type) qs.set("employment_type", params.employment_type);
+    qs.set("page", String(params.page ?? 1));
+    qs.set("page_size", String(params.page_size ?? 25));
+    return fetchJson<{ items: OrgPerson[]; total: number; page: number; page_size: number }>(
+      `/api/v1/org/paged?${qs.toString()}`,
+    );
+  },
   createStaff(payload: {
     email: string;
     full_name: string;
@@ -499,6 +510,26 @@ export interface BillingRun {
   total_amount: number | null;
   failure_reason: string | null;
   has_xlsx: boolean;
+}
+
+export interface OrgPerson {
+  id: string;
+  branch_id: string | null;
+  branch_name: string | null;
+  full_name: string;
+  email: string;
+  phone: string | null;
+  role: string;
+  position: string;
+  position_ko: string;
+  employment_type: string;
+  employment_type_ko: string;
+  hired_on: string | null;
+  contract_end_on: string | null;
+  monthly_salary_krw: number | null;
+  hourly_rate_est_krw: number | null;
+  updated_at: string;
+  is_inactive: boolean;
 }
 
 export interface StaffMember {

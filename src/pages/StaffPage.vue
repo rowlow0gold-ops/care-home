@@ -1,48 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useQuasar } from "quasar";
-import { server, type StaffMember } from "@/lib/server";
+import { server, type OrgPerson } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
 const session = useServerSessionStore();
 
-// Create: 시설장(branch_manager)+; Edit/Deactivate: 본사(hq)만 — 서버가 강제.
 const canCreate = computed(() => session.hasRole("branch_manager"));
 const canAdmin = computed(() => session.hasRole("hq"));
 
-// ── Server role labels (권한 레벨) ──────────────────────────────────────────
-const ROLE_OPTIONS = [
-  { label: "요양보호사", value: "caregiver" },
-  { label: "간호사", value: "nurse" },
-  { label: "시설장", value: "branch_manager" },
-  { label: "본사", value: "hq" },
-];
-const roleLabel: Record<string, string> = {
-  caregiver: "요양보호사",
-  nurse: "간호사",
-  branch_manager: "시설장",
-  hq: "본사",
-  super_admin: "최고관리자",
-};
-const roleColor: Record<string, string> = {
-  caregiver: "grey-7",
-  nurse: "teal",
-  branch_manager: "blue",
-  hq: "deep-purple",
-  super_admin: "red",
-};
-
-// ── Position (직책) options — staff_position enum ───────────────────────────
+// ── Position / employment options (server enums) ────────────────────────────
 const POSITION_OPTIONS = [
-  { label: "대표", value: "ceo" },
-  { label: "운영총괄", value: "coo" },
-  { label: "재무이사", value: "cfo" },
-  { label: "인사이사", value: "hr_director" },
-  { label: "품질관리이사", value: "quality_director" },
-  { label: "컴플라이언스", value: "compliance" },
-  { label: "교육연수", value: "training" },
-  { label: "IT/마케팅", value: "it" },
   { label: "시설장", value: "branch_manager" },
   { label: "사무국장", value: "office_manager" },
   { label: "사회복지사", value: "social_worker" },
@@ -56,10 +26,9 @@ const POSITION_OPTIONS = [
   { label: "환경미화원", value: "cleaner" },
   { label: "운전기사", value: "driver" },
   { label: "촉탁의", value: "doctor_visiting" },
+  { label: "사무직", value: "it" },
   { label: "기타", value: "other" },
 ];
-
-// ── Employment type (고용형태) ─────────────────────────────────────────────
 const EMPLOYMENT_OPTIONS = [
   { label: "정규직", value: "regular" },
   { label: "계약직", value: "contract" },
@@ -69,57 +38,94 @@ const EMPLOYMENT_OPTIONS = [
   { label: "파견직", value: "dispatched" },
   { label: "위촉직", value: "consultant" },
 ];
-
-const staff = ref<StaffMember[]>([]);
-const loading = ref(false);
-const showAddDialog = ref(false);
-const showEditDialog = ref(false);
-const addFormRef = ref();
-const editFormRef = ref();
-const submitting = ref(false);
-const selected = ref<StaffMember | null>(null);
-
-const emptyAdd = () => ({
-  full_name: "",
-  email: "",
-  password: "",
-  role: "caregiver",
-  position: "caregiver",
-  employment_type: "regular",
-  phone: "",
-});
-const addForm = ref(emptyAdd());
-
-const editForm = ref({
-  full_name: "",
-  email: "",
-  phone: "",
-  position: "caregiver",
-  employment_type: "regular",
-});
-
-const columns = [
-  { name: "full_name", label: "이름", field: "full_name", align: "left" as const },
-  { name: "role", label: "권한", field: "role", align: "left" as const },
-  { name: "email", label: "이메일", field: "email", align: "left" as const },
-  { name: "phone", label: "연락처", field: "phone", align: "left" as const },
-  { name: "status", label: "상태", field: "status", align: "center" as const },
-  { name: "actions", label: "", field: "actions", align: "center" as const },
+const ROLE_OPTIONS = [
+  { label: "요양보호사", value: "caregiver" },
+  { label: "간호사", value: "nurse" },
+  { label: "시설장", value: "branch_manager" },
+  { label: "본사", value: "hq" },
 ];
 
-async function loadStaff() {
+// ── List state (HQ-style: search + 고용형태 filter + pagination) ─────────────
+const rows = ref<OrgPerson[]>([]);
+const total = ref(0);
+const loading = ref(false);
+const q = ref("");
+const empFilter = ref<string>("");
+const page = ref(1);
+const pageSize = ref(25);
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
+
+const empOptions = [{ label: "전체 고용형태", value: "" }, ...EMPLOYMENT_OPTIONS];
+
+async function load() {
   loading.value = true;
   try {
-    const all = await server.staff();
-    // Desktop is branch-scoped: show only the signed-in 센터's staff.
-    const myBranch = session.me?.branch_id;
-    staff.value = myBranch ? all.filter((s) => s.branch_id === myBranch) : all;
+    const res = await server.orgPaged({
+      q: q.value.trim() || undefined,
+      employment_type: empFilter.value || undefined,
+      page: page.value,
+      page_size: pageSize.value,
+    });
+    rows.value = res.items;
+    total.value = res.total;
   } catch (e: any) {
     $q.notify({ type: "negative", message: `직원 목록을 불러오지 못했습니다: ${e?.message ?? e}` });
   } finally {
     loading.value = false;
   }
 }
+watch([empFilter, page, pageSize], load);
+function applySearch() { page.value = 1; load(); }
+
+// 경력 (tenure) from hired_on
+function tenure(hired: string | null): string {
+  if (!hired) return "—";
+  const start = new Date(hired + "T00:00:00");
+  const now = new Date();
+  let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+  if (now.getDate() < start.getDate()) months--;
+  if (months < 0) return "—";
+  const y = Math.floor(months / 12), m = months % 12;
+  if (y > 0 && m > 0) return `${y}년 ${m}개월`;
+  if (y > 0) return `${y}년`;
+  return `${m}개월`;
+}
+
+const columns = [
+  { name: "full_name", label: "이름", field: "full_name", align: "left" as const },
+  { name: "branch_name", label: "소속", field: "branch_name", align: "left" as const },
+  { name: "position_ko", label: "직책", field: "position_ko", align: "left" as const },
+  { name: "employment_type_ko", label: "고용", field: "employment_type_ko", align: "left" as const },
+  { name: "tenure", label: "경력", field: "hired_on", align: "left" as const },
+  { name: "email", label: "이메일", field: "email", align: "left" as const },
+  { name: "phone", label: "전화", field: "phone", align: "left" as const },
+  { name: "actions", label: "", field: "actions", align: "center" as const },
+];
+
+// ── Export (내보내기) ───────────────────────────────────────────────────────
+const exporting = ref(false);
+async function exportXlsx() {
+  exporting.value = true;
+  try {
+    const bytes = await server.exportXlsx("/api/v1/staff/export.xlsx");
+    const saved = await invoke<string | null>("save_excel", { filename: "직원_명단.xlsx", data: Array.from(bytes) });
+    if (saved) $q.notify({ type: "positive", message: "직원 명단을 저장했습니다." });
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `내보내기 실패: ${e?.message ?? e}` });
+  } finally {
+    exporting.value = false;
+  }
+}
+
+// ── Add ─────────────────────────────────────────────────────────────────────
+const showAddDialog = ref(false);
+const addFormRef = ref();
+const submitting = ref(false);
+const emptyAdd = () => ({
+  full_name: "", email: "", password: "", role: "caregiver",
+  position: "caregiver", employment_type: "regular", phone: "",
+});
+const addForm = ref(emptyAdd());
 
 async function submitAdd() {
   const valid = await addFormRef.value?.validate();
@@ -138,27 +144,28 @@ async function submitAdd() {
     $q.notify({ type: "positive", message: "직원이 추가되었습니다." });
     showAddDialog.value = false;
     addForm.value = emptyAdd();
-    await loadStaff();
+    await load();
   } catch (e: any) {
-    const msg = e?.status === 409 ? "이미 등록된 이메일입니다." : `추가 실패: ${e?.message ?? e}`;
-    $q.notify({ type: "negative", message: msg });
+    $q.notify({ type: "negative", message: e?.status === 409 ? "이미 등록된 이메일입니다." : `추가 실패: ${e?.message ?? e}` });
   } finally {
     submitting.value = false;
   }
 }
 
-function openEdit(s: StaffMember) {
-  selected.value = s;
+// ── Edit (HQ-only) ──────────────────────────────────────────────────────────
+const showEditDialog = ref(false);
+const editFormRef = ref();
+const selected = ref<OrgPerson | null>(null);
+const editForm = ref({ full_name: "", email: "", phone: "", position: "caregiver", employment_type: "regular" });
+
+function openEdit(p: OrgPerson) {
+  selected.value = p;
   editForm.value = {
-    full_name: s.full_name,
-    email: s.email,
-    phone: s.phone ?? "",
-    position: "caregiver",
-    employment_type: "regular",
+    full_name: p.full_name, email: p.email, phone: p.phone ?? "",
+    position: p.position, employment_type: p.employment_type,
   };
   showEditDialog.value = true;
 }
-
 async function submitEdit() {
   if (!selected.value) return;
   const valid = await editFormRef.value?.validate();
@@ -175,204 +182,133 @@ async function submitEdit() {
     });
     $q.notify({ type: "positive", message: "직원 정보가 수정되었습니다." });
     showEditDialog.value = false;
-    await loadStaff();
+    await load();
   } catch (e: any) {
-    const msg =
-      e?.status === 409
-        ? "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도해 주세요."
-        : `수정 실패: ${e?.message ?? e}`;
-    $q.notify({ type: "negative", message: msg });
+    $q.notify({ type: "negative", message: e?.status === 409 ? "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요." : `수정 실패: ${e?.message ?? e}` });
   } finally {
     submitting.value = false;
   }
 }
 
-function confirmDeactivate(s: StaffMember) {
+function confirmDeactivate(p: OrgPerson) {
   $q.dialog({
     title: "직원 비활성화",
-    message: `${s.full_name}님을 비활성화하시겠습니까? 더 이상 로그인할 수 없습니다.`,
+    message: `${p.full_name}님을 비활성화하시겠습니까? 더 이상 로그인할 수 없습니다.`,
     cancel: { label: "취소", flat: true },
     ok: { label: "비활성화", color: "negative", unelevated: true },
     persistent: true,
   }).onOk(async () => {
     try {
-      await server.deactivateStaff(s.id);
+      await server.deactivateStaff(p.id);
       $q.notify({ type: "positive", message: "비활성화되었습니다." });
-      await loadStaff();
+      await load();
     } catch (e: any) {
       $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` });
     }
   });
 }
 
-onMounted(loadStaff);
+onMounted(load);
 </script>
 
 <template>
   <q-page class="q-pa-lg">
     <!-- Header -->
-    <div class="row items-center q-mb-lg">
+    <div class="row items-center q-mb-md">
       <div class="col">
         <div class="text-h5 text-weight-bold">직원 관리</div>
-        <div class="text-caption text-grey-6">센터 직원 명부</div>
+        <div class="text-caption text-grey-6">총 {{ total }}명</div>
       </div>
-      <div v-if="canCreate" class="col-auto">
-        <q-btn
-          color="primary"
-          icon="o_person_add"
-          label="직원 추가"
-          unelevated
-          @click="() => { addForm = emptyAdd(); showAddDialog = true; }"
-        />
+      <div class="col-auto q-gutter-sm">
+        <q-btn outline color="primary" icon="o_download" label="내보내기" :loading="exporting" @click="exportXlsx" />
+        <q-btn v-if="canCreate" color="primary" icon="o_person_add" label="직원 추가"
+               unelevated @click="() => { addForm = emptyAdd(); showAddDialog = true; }" />
       </div>
     </div>
 
-    <!-- Skeleton loading -->
-    <template v-if="loading">
-      <q-card flat bordered class="q-pa-md">
-        <q-skeleton type="rect" height="40px" class="q-mb-sm" />
-        <q-skeleton type="rect" height="48px" class="q-mb-sm" v-for="n in 6" :key="n" />
-      </q-card>
-    </template>
+    <!-- Filters -->
+    <div class="row q-col-gutter-sm q-mb-md items-center">
+      <div class="col-12 col-sm-6 col-md-4">
+        <q-input v-model="q" dense outlined clearable placeholder="이름 / 이메일 / 직책 검색"
+                 @keyup.enter="applySearch" @clear="applySearch">
+          <template #prepend><q-icon name="search" /></template>
+          <template #append><q-btn flat dense label="검색" color="primary" @click="applySearch" /></template>
+        </q-input>
+      </div>
+      <div class="col-6 col-sm-3 col-md-2">
+        <q-select v-model="empFilter" :options="empOptions" dense outlined emit-value map-options />
+      </div>
+    </div>
 
     <!-- Table -->
     <q-table
-      v-else
-      :rows="staff"
+      :rows="rows"
       :columns="columns"
       row-key="id"
-      flat
-      bordered
-      :rows-per-page-options="[10, 25, 50]"
+      flat bordered
+      :loading="loading"
+      hide-pagination
+      :rows-per-page-options="[0]"
     >
-      <template #body-cell-role="props">
-        <q-td :props="props">
-          <q-badge :color="roleColor[props.row.role] || 'grey'" :label="roleLabel[props.row.role] || props.row.role" />
-        </q-td>
+      <template #body-cell-full_name="props">
+        <q-td :props="props"><span class="text-weight-medium">{{ props.row.full_name }}</span></q-td>
       </template>
-
+      <template #body-cell-position_ko="props">
+        <q-td :props="props"><q-badge color="blue-grey-1" text-color="blue-grey-9" :label="props.row.position_ko" /></q-td>
+      </template>
+      <template #body-cell-tenure="props">
+        <q-td :props="props">{{ tenure(props.row.hired_on) }}</q-td>
+      </template>
       <template #body-cell-phone="props">
         <q-td :props="props">{{ props.row.phone || "—" }}</q-td>
       </template>
-
-      <template #body-cell-status="props">
-        <q-td :props="props" class="text-center">
-          <q-badge v-if="!props.row.deactivated_at" color="green" label="재직" />
-          <q-badge v-else color="grey-5" label="비활성" />
-        </q-td>
-      </template>
-
       <template #body-cell-actions="props">
         <q-td :props="props" class="text-center">
-          <template v-if="canAdmin && !props.row.deactivated_at">
-            <q-btn flat round dense icon="o_edit" color="primary" @click="openEdit(props.row)">
-              <q-tooltip>정보 수정</q-tooltip>
-            </q-btn>
-            <q-btn flat round dense icon="o_person_off" color="negative" @click="confirmDeactivate(props.row)">
-              <q-tooltip>비활성화</q-tooltip>
-            </q-btn>
+          <template v-if="canAdmin">
+            <q-btn flat round dense icon="o_edit" color="primary" @click="openEdit(props.row)"><q-tooltip>수정</q-tooltip></q-btn>
+            <q-btn flat round dense icon="o_person_off" color="negative" @click="confirmDeactivate(props.row)"><q-tooltip>비활성화</q-tooltip></q-btn>
           </template>
           <span v-else class="text-caption text-grey-4">—</span>
         </q-td>
       </template>
-
       <template #no-data>
         <div class="full-width column flex-center q-py-xl">
           <q-icon name="o_group" size="3rem" color="grey-4" />
-          <div class="text-grey-5 q-mt-sm">등록된 직원이 없습니다</div>
+          <div class="text-grey-5 q-mt-sm">직원이 없습니다</div>
         </div>
       </template>
     </q-table>
 
-    <!-- Add Staff Dialog -->
+    <!-- Pagination -->
+    <div class="row items-center justify-end q-mt-md q-gutter-md">
+      <q-select v-model="pageSize" :options="[10, 25, 50, 100]" dense outlined style="min-width:90px" />
+      <q-pagination v-model="page" :max="totalPages" :max-pages="7" boundary-numbers direction-links />
+    </div>
+
+    <!-- Add Dialog -->
     <q-dialog v-model="showAddDialog" persistent>
       <q-card style="min-width: 540px">
         <q-card-section class="row items-center q-pb-none">
-          <div class="text-h6">직원 추가</div>
-          <q-space />
+          <div class="text-h6">직원 추가</div><q-space />
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
-
         <q-card-section>
           <q-form ref="addFormRef" class="q-gutter-sm">
-            <div class="text-subtitle2 text-grey-7">계정 정보</div>
             <div class="row q-gutter-sm">
-              <div class="col">
-                <q-input
-                  v-model="addForm.full_name"
-                  label="이름 *"
-                  outlined
-                  dense
-                  :rules="[(v) => !!v?.trim() || '이름을 입력하세요']"
-                  lazy-rules="ondemand"
-                />
-              </div>
-              <div class="col">
-                <q-input
-                  v-model="addForm.email"
-                  label="이메일 *"
-                  type="email"
-                  outlined
-                  dense
-                  :rules="[(v) => !!v?.trim() || '이메일을 입력하세요']"
-                  lazy-rules="ondemand"
-                />
-              </div>
+              <q-input class="col" v-model="addForm.full_name" label="이름 *" outlined dense :rules="[(v)=>!!v?.trim()||'이름을 입력하세요']" lazy-rules="ondemand" />
+              <q-input class="col" v-model="addForm.email" label="이메일 *" type="email" outlined dense :rules="[(v)=>!!v?.trim()||'이메일을 입력하세요']" lazy-rules="ondemand" />
             </div>
             <div class="row q-gutter-sm">
-              <div class="col">
-                <q-input
-                  v-model="addForm.password"
-                  label="초기 비밀번호 *"
-                  type="password"
-                  outlined
-                  dense
-                  :rules="[(v) => (v?.length ?? 0) >= 8 || '8자 이상']"
-                  lazy-rules="ondemand"
-                />
-              </div>
-              <div class="col">
-                <q-select
-                  v-model="addForm.role"
-                  :options="ROLE_OPTIONS"
-                  label="권한"
-                  outlined
-                  dense
-                  emit-value
-                  map-options
-                />
-              </div>
+              <q-input class="col" v-model="addForm.password" label="초기 비밀번호 *" type="password" outlined dense :rules="[(v)=>(v?.length??0)>=8||'8자 이상']" lazy-rules="ondemand" />
+              <q-select class="col" v-model="addForm.role" :options="ROLE_OPTIONS" label="권한" outlined dense emit-value map-options />
             </div>
-            <q-separator class="q-my-sm" />
-            <div class="text-subtitle2 text-grey-7">직책 / 근무</div>
             <div class="row q-gutter-sm">
-              <div class="col">
-                <q-select
-                  v-model="addForm.position"
-                  :options="POSITION_OPTIONS"
-                  label="직책"
-                  outlined
-                  dense
-                  emit-value
-                  map-options
-                />
-              </div>
-              <div class="col">
-                <q-select
-                  v-model="addForm.employment_type"
-                  :options="EMPLOYMENT_OPTIONS"
-                  label="고용형태"
-                  outlined
-                  dense
-                  emit-value
-                  map-options
-                />
-              </div>
+              <q-select class="col" v-model="addForm.position" :options="POSITION_OPTIONS" label="직책" outlined dense emit-value map-options />
+              <q-select class="col" v-model="addForm.employment_type" :options="EMPLOYMENT_OPTIONS" label="고용형태" outlined dense emit-value map-options />
             </div>
             <q-input v-model="addForm.phone" label="연락처" outlined dense />
           </q-form>
         </q-card-section>
-
         <q-card-actions align="right" class="q-px-md q-pb-md">
           <q-btn flat label="취소" v-close-popup />
           <q-btn color="primary" label="추가" unelevated :loading="submitting" @click="submitAdd" />
@@ -384,59 +320,22 @@ onMounted(loadStaff);
     <q-dialog v-model="showEditDialog" persistent>
       <q-card style="min-width: 480px">
         <q-card-section class="row items-center q-pb-none">
-          <div class="text-h6">직원 정보 수정</div>
-          <q-space />
+          <div class="text-h6">직원 정보 수정</div><q-space />
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
-
         <q-card-section>
           <q-form ref="editFormRef" class="q-gutter-sm">
             <div class="row q-gutter-sm">
-              <div class="col">
-                <q-input
-                  v-model="editForm.full_name"
-                  label="이름 *"
-                  outlined
-                  dense
-                  :rules="[(v) => !!v?.trim() || '이름을 입력하세요']"
-                  lazy-rules="ondemand"
-                />
-              </div>
-              <div class="col">
-                <q-input v-model="editForm.email" label="이메일" type="email" outlined dense />
-              </div>
+              <q-input class="col" v-model="editForm.full_name" label="이름 *" outlined dense :rules="[(v)=>!!v?.trim()||'이름을 입력하세요']" lazy-rules="ondemand" />
+              <q-input class="col" v-model="editForm.email" label="이메일" type="email" outlined dense />
             </div>
             <div class="row q-gutter-sm">
-              <div class="col">
-                <q-select
-                  v-model="editForm.position"
-                  :options="POSITION_OPTIONS"
-                  label="직책"
-                  outlined
-                  dense
-                  emit-value
-                  map-options
-                />
-              </div>
-              <div class="col">
-                <q-select
-                  v-model="editForm.employment_type"
-                  :options="EMPLOYMENT_OPTIONS"
-                  label="고용형태"
-                  outlined
-                  dense
-                  emit-value
-                  map-options
-                />
-              </div>
+              <q-select class="col" v-model="editForm.position" :options="POSITION_OPTIONS" label="직책" outlined dense emit-value map-options />
+              <q-select class="col" v-model="editForm.employment_type" :options="EMPLOYMENT_OPTIONS" label="고용형태" outlined dense emit-value map-options />
             </div>
             <q-input v-model="editForm.phone" label="연락처" outlined dense />
-            <div class="text-caption text-grey-6">
-              직책·고용형태는 현재 값을 덮어씁니다. 권한(역할) 변경은 본사 인사 시스템에서 처리합니다.
-            </div>
           </q-form>
         </q-card-section>
-
         <q-card-actions align="right" class="q-px-md q-pb-md">
           <q-btn flat label="취소" v-close-popup />
           <q-btn color="primary" label="저장" unelevated :loading="submitting" @click="submitEdit" />
