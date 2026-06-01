@@ -36,10 +36,7 @@ const POSITION_OPTIONS = [
 const EMPLOYMENT_OPTIONS = [
   { label: "정규직", value: "regular" },
   { label: "계약직", value: "contract" },
-  { label: "단기계약직", value: "short_contract" },
-  { label: "시간제", value: "part_time" },
-  { label: "일용직", value: "temporary" },
-  { label: "파견직", value: "dispatched" },
+  { label: "아르바이트", value: "part_time" },
   { label: "위촉직", value: "consultant" },
 ];
 const ROLE_OPTIONS = [

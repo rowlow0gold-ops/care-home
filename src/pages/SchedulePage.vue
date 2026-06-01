@@ -37,10 +37,10 @@ function localDateStr(d: Date): string {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
 }
+// Korean convention: weeks start on SUNDAY. Returns the Sunday on/before d.
 function weekMonday(d: Date): Date {
   const c = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const dow = c.getDay();
-  c.setDate(c.getDate() + (dow === 0 ? -6 : 1 - dow));
+  c.setDate(c.getDate() - c.getDay()); // getDay 0=Sun
   return c;
 }
 function addDays(d: Date, n: number): Date {
@@ -48,7 +48,7 @@ function addDays(d: Date, n: number): Date {
   c.setDate(c.getDate() + n);
   return c;
 }
-const DAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
+const DAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
 const todayStr   = computed(() => localDateStr(new Date()));
 function isToday(d: Date) { return localDateStr(d) === todayStr.value; }
 
@@ -121,9 +121,8 @@ const monthGrid = computed<Date[][]>(() => {
   const firstDay = new Date(year, month, 1);
   const lastDay  = new Date(year, month + 1, 0);
 
-  const gridStart = weekMonday(firstDay);
-  const lastDow   = lastDay.getDay(); // 0=Sun … 6=Sat
-  const gridEnd   = addDays(lastDay, lastDow === 0 ? 0 : 7 - lastDow);
+  const gridStart = weekMonday(firstDay);            // Sunday on/before the 1st
+  const gridEnd   = addDays(lastDay, 6 - lastDay.getDay()); // Saturday on/after last
 
   const weeks: Date[][] = [];
   let cur = new Date(gridStart.getTime());
@@ -606,7 +605,7 @@ function deleteShift(entry: ScheduleEntry) {
       <div v-if="canCreate" class="col-auto q-gutter-xs">
         <q-btn color="primary" icon="o_save" label="저장" unelevated dense :disable="!dirty" :loading="saving" @click="saveDraft" />
         <q-btn outline color="grey-8" icon="o_undo" label="되돌리기" dense :disable="!dirty" @click="rollbackDraft" />
-        <q-btn flat color="negative" icon="o_clear_all" label="비우기" dense @click="clearDraft" />
+        <q-btn flat color="negative" icon="o_refresh" label="클리어" dense @click="clearDraft" />
       </div>
 
       <div class="col-auto" style="min-width: 160px">
@@ -767,9 +766,11 @@ function deleteShift(entry: ScheduleEntry) {
             :data-cell-key="dropKey(null, date)"
             :data-date="localDateStr(date)"
           >
-            <div class="month-day-num" :class="isToday(date) ? 'today-badge' : (isRedDay(date) ? 'text-negative text-weight-bold' : '')">
-              {{ date.getDate() }}
-              <q-tooltip v-if="holidayName(date)">{{ holidayName(date) }}</q-tooltip>
+            <div class="row items-center no-wrap">
+              <span class="month-day-num" :class="isToday(date) ? 'today-badge' : (isRedDay(date) ? 'text-negative text-weight-bold' : '')">
+                {{ date.getDate() }}
+              </span>
+              <span v-if="holidayName(date)" class="month-holiday text-negative">{{ holidayName(date) }}</span>
             </div>
 
             <template v-for="(entry, ei) in dayEntries(date)" :key="entry.id">
@@ -983,6 +984,7 @@ function deleteShift(entry: ScheduleEntry) {
   margin-bottom: 3px; display: inline-block; min-width: 22px; text-align: center;
 }
 .today-badge { background: #3b82f6; color: #fff !important; border-radius: 50%; padding: 1px 5px; }
+.month-holiday { font-size: 0.62rem; margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .month-shift-bar {
   display: flex; align-items: center; gap: 3px;
   border-radius: 4px; padding: 2px 5px; margin-bottom: 2px;
