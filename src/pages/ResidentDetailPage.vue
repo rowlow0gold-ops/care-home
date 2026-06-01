@@ -14,6 +14,8 @@ const id = computed(() => String(route.params.id));
 const resident = ref<Resident | null>(null);
 const tab = ref<"care" | "vitals" | "meds" | "photos">("care");
 const canCreate = computed(() => session.canCreate);
+const canEdit = computed(() => session.canEdit);
+const canDelete = computed(() => session.canDelete);
 
 const sexLabel: Record<string, string> = { male: "남", female: "여", other: "기타" };
 const statusLabel: Record<string, string> = { active: "재원", discharged: "퇴소", deceased: "사망" };
@@ -32,6 +34,72 @@ function fmt(iso: string) {
 async function loadResident() {
   try { resident.value = await server.resident(id.value); }
   catch (e: any) { $q.notify({ type: "negative", message: `어르신 정보를 불러오지 못했습니다: ${e?.message ?? e}` }); }
+}
+
+// ── 어르신 수정 / 상태변경 (CRUD) ───────────────────────────────────────────
+const showEdit = ref(false);
+const editRef = ref();
+const savingEdit = ref(false);
+const editForm = ref({ full_name: "", sex: "female" as "male" | "female" | "other", birth_date: "", care_grade: "", room_number: "", admitted_on: "" });
+const sexOptions = [{ label: "여", value: "female" }, { label: "남", value: "male" }, { label: "기타", value: "other" }];
+const gradeOptions = [
+  { label: "1등급", value: "1" }, { label: "2등급", value: "2" }, { label: "3등급", value: "3" },
+  { label: "4등급", value: "4" }, { label: "5등급", value: "5" }, { label: "인지지원", value: "cognitive_support" },
+];
+function openEdit() {
+  if (!resident.value) return;
+  const r = resident.value;
+  editForm.value = {
+    full_name: r.full_name, sex: r.sex, birth_date: r.birth_date,
+    care_grade: r.care_grade ?? "", room_number: r.room_number ?? "", admitted_on: r.admitted_on,
+  };
+  showEdit.value = true;
+}
+async function submitEdit() {
+  if (!resident.value) return;
+  const valid = await editRef.value?.validate();
+  if (!valid) return;
+  savingEdit.value = true;
+  try {
+    await server.updateResident(resident.value.id, {
+      full_name: editForm.value.full_name.trim(),
+      sex: editForm.value.sex,
+      birth_date: editForm.value.birth_date,
+      care_grade: editForm.value.care_grade || null,
+      room_number: editForm.value.room_number.trim() || null,
+      admitted_on: editForm.value.admitted_on,
+    });
+    $q.notify({ type: "positive", message: "어르신 정보가 수정되었습니다." });
+    showEdit.value = false;
+    await loadResident();
+  } catch (e: any) { $q.notify({ type: "negative", message: `수정 실패: ${e?.message ?? e}` }); }
+  finally { savingEdit.value = false; }
+}
+function confirmDischarge() {
+  if (!resident.value) return;
+  $q.dialog({
+    title: "퇴소 처리", message: `${resident.value.full_name} 어르신을 퇴소 처리하시겠습니까?`,
+    cancel: { label: "취소", flat: true }, ok: { label: "퇴소", color: "negative", unelevated: true }, persistent: true,
+  }).onOk(async () => {
+    try {
+      await server.dischargeResident(resident.value!.id, new Date().toISOString().slice(0, 10));
+      $q.notify({ type: "positive", message: "퇴소 처리되었습니다." });
+      await loadResident();
+    } catch (e: any) { $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` }); }
+  });
+}
+function confirmDecease() {
+  if (!resident.value) return;
+  $q.dialog({
+    title: "사망 처리", message: `${resident.value.full_name} 어르신을 사망 처리하시겠습니까?`,
+    cancel: { label: "취소", flat: true }, ok: { label: "사망 처리", color: "negative", unelevated: true }, persistent: true,
+  }).onOk(async () => {
+    try {
+      await server.deceaseResident(resident.value!.id);
+      $q.notify({ type: "positive", message: "처리되었습니다." });
+      await loadResident();
+    } catch (e: any) { $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` }); }
+  });
 }
 
 // ── 케어 기록 ───────────────────────────────────────────────────────────────
@@ -164,9 +232,46 @@ onMounted(async () => {
           </div>
         </div>
         <q-space />
-        <q-badge v-if="resident" :color="resident.status === 'active' ? 'primary' : 'grey'" :label="statusLabel[resident.status]" />
+        <q-badge v-if="resident" :color="resident.status === 'active' ? 'primary' : 'grey'" :label="statusLabel[resident.status]" class="q-mr-sm" />
+        <q-btn v-if="canEdit && resident" outline color="primary" icon="o_edit" label="수정" @click="openEdit" />
+        <q-btn v-if="canDelete && resident && resident.status === 'active'" flat round dense icon="o_more_vert">
+          <q-menu>
+            <q-list style="min-width: 140px">
+              <q-item clickable v-close-popup @click="confirmDischarge"><q-item-section>퇴소 처리</q-item-section></q-item>
+              <q-item clickable v-close-popup @click="confirmDecease"><q-item-section>사망 처리</q-item-section></q-item>
+            </q-list>
+          </q-menu>
+        </q-btn>
       </q-card-section>
     </q-card>
+
+    <!-- Edit resident dialog -->
+    <q-dialog v-model="showEdit" persistent>
+      <q-card style="min-width: 480px">
+        <q-card-section class="row items-center q-pb-none">
+          <div class="text-h6">어르신 정보 수정</div><q-space />
+          <q-btn icon="o_close" flat round dense v-close-popup />
+        </q-card-section>
+        <q-card-section>
+          <q-form ref="editRef" class="q-gutter-sm">
+            <q-input v-model="editForm.full_name" label="성함 *" outlined dense :rules="[(v)=>!!v?.trim()||'성함을 입력하세요']" lazy-rules="ondemand" />
+            <div class="row q-gutter-sm">
+              <q-select class="col" v-model="editForm.sex" :options="sexOptions" label="성별" outlined dense emit-value map-options />
+              <q-input class="col" v-model="editForm.birth_date" label="생년월일" mask="####-##-##" outlined dense />
+            </div>
+            <div class="row q-gutter-sm">
+              <q-select class="col" v-model="editForm.care_grade" :options="gradeOptions" label="장기요양등급" outlined dense emit-value map-options clearable />
+              <q-input class="col" v-model="editForm.room_number" label="호실" outlined dense />
+            </div>
+            <q-input v-model="editForm.admitted_on" label="입소일" mask="####-##-##" outlined dense />
+          </q-form>
+        </q-card-section>
+        <q-card-actions align="right" class="q-px-md q-pb-md">
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="저장" unelevated :loading="savingEdit" @click="submitEdit" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <q-tabs v-model="tab" align="left" active-color="primary" indicator-color="primary" class="q-mb-sm">
       <q-tab name="care" icon="o_assignment" label="케어 기록" />
