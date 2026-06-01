@@ -111,15 +111,6 @@ onMounted(async () => {
           </q-card-section>
         </q-card>
 
-        <q-card flat bordered class="q-mt-md">
-          <q-card-section>
-            <div class="text-subtitle1 text-weight-bold q-mb-sm">직원 / 계정 관리</div>
-            <div class="text-caption text-grey-6">
-              직원 계정 추가·수정은 <b>직원 관리</b> 메뉴에서 처리합니다.
-            </div>
-            <q-btn flat color="primary" icon="o_badge" label="직원 관리로 이동" to="/staff" class="q-mt-sm" />
-          </q-card-section>
-        </q-card>
       </div>
     </div>
   </q-page>
