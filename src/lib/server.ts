@@ -290,6 +290,21 @@ export const server = {
   staff() {
     return fetchJson<StaffMember[]>("/api/v1/staff");
   },
+  // 휴가/연차 — branch_manager+ sees the whole branch's requests (incl. tablet-sent day-offs).
+  leaveRequests(status?: string) {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return fetchJson<Array<{
+      id: string; user_id: string; user_name: string; user_role: string;
+      leave_type: string; start_date: string; end_date: string; days: number;
+      reason: string | null; status: "pending" | "approved" | "rejected" | "cancelled"; requested_at: string;
+    }>>(`/api/v1/leave-requests${qs}`);
+  },
+  decideLeave(id: string, status: "approved" | "rejected") {
+    return fetchJson(`/api/v1/leave-requests/${id}/decide`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+  },
   // HQ-style paged org list (이름/소속/직책/고용/경력 …). Branch-scoped server-side.
   orgPaged(params: { q?: string; employment_type?: string; page?: number; page_size?: number }) {
     const qs = new URLSearchParams();

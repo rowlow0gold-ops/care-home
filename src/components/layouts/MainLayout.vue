@@ -37,6 +37,7 @@ const navGroups: NavGroup[] = [
     heading: "서비스",
     items: [
       { to: "/schedule", key: "schedule", icon: "o_calendar_month", label: "스케쥴러" },
+      { to: "/leave",    key: "leave",    icon: "o_event_busy",     label: "휴가 승인" },
     ],
   },
   {
