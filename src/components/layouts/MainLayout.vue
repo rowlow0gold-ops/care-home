@@ -127,19 +127,21 @@ async function handleLogout() {
 
         <!-- User card + logout pinned at the bottom-left (HQ style) -->
         <q-separator dark />
-        <div v-if="!miniMode" class="sidebar-userbox q-pa-md">
-          <div class="row items-center no-wrap q-mb-xs">
-            <q-avatar size="34px" color="secondary" text-color="white">
-              {{ (session.me?.name ?? "?").slice(0, 1) }}
-            </q-avatar>
-            <div class="q-ml-sm ellipsis">
-              <div class="text-weight-semibold text-white ellipsis">{{ session.me?.name ?? "—" }}</div>
-              <div class="text-caption sidebar-sub ellipsis">{{ session.me?.email }}</div>
-            </div>
-          </div>
-          <div class="row items-center q-gutter-xs">
+        <div v-if="!miniMode" class="sidebar-userbox q-px-md q-py-sm">
+          <!-- role · 소속 -->
+          <div class="row items-center q-gutter-xs q-mb-sm">
             <q-chip square dense color="secondary" text-color="white" size="sm">{{ myRoleLabel }}</q-chip>
-            <span class="text-caption sidebar-sub ellipsis">{{ session.branchName ?? session.tenantName }}</span>
+            <span class="text-caption text-white">{{ session.branchName ?? session.tenantName }}</span>
+          </div>
+          <!-- name -->
+          <div class="row items-center no-wrap q-mb-xs">
+            <q-icon name="o_person" size="18px" class="sidebar-sub q-mr-sm" />
+            <span class="text-weight-semibold text-white">{{ session.me?.name ?? "—" }}</span>
+          </div>
+          <!-- email (full, wraps) -->
+          <div class="row items-start no-wrap">
+            <q-icon name="o_mail" size="18px" class="sidebar-sub q-mr-sm q-mt-xs" />
+            <span class="text-caption sidebar-sub sidebar-email">{{ session.me?.email }}</span>
           </div>
         </div>
         <q-item clickable v-ripple class="sidebar-item q-my-sm" @click="handleLogout">
@@ -165,6 +167,10 @@ async function handleLogout() {
 .sidebar-sub {
   color: #94a3b8;
   margin-top: 2px;
+}
+.sidebar-email {
+  word-break: break-all;
+  line-height: 1.3;
 }
 .sidebar-item {
   color: #94a3b8;
