@@ -59,5 +59,55 @@ export const useServerSessionStore = defineStore("server-session", () => {
     return (ROLE_RANK[me.value.role] ?? 0) >= (ROLE_RANK[min] ?? Infinity);
   }
 
-  return { me, hydrating, isLoggedIn, role, branchName, tenantName, hydrate, login, logout, hasRole };
+  // ── Desktop page access by job title (position) ───────────────────────────
+  // The hub desktop splits access by position, not just the security role.
+  // Page keys match the route names in router/index.ts.
+  const ALL = "*" as const;
+  const POSITION_PAGES: Record<string, readonly string[] | typeof ALL> = {
+    branch_manager: ALL,                                                   // 시설장 — everything
+    it: ALL,                                                               // 본사 IT 지원 — everything
+    office_manager: ["residents", "schedule", "leave", "reports", "accounting", "settings"], // 행정
+    receptionist:   ["residents", "schedule", "leave", "notifications", "settings"],          // 접수
+    dietitian:      ["residents", "meals", "settings"],                    // 영양사
+  };
+
+  /** Pages this user may open: "*" = all, or an explicit list. */
+  function allowedPages(): readonly string[] | typeof ALL {
+    if (!me.value) return [];
+    if (me.value.role === "hq" || me.value.role === "super_admin") return ALL;
+    const pos = me.value.position ?? "";
+    const mapped = POSITION_PAGES[pos];
+    if (mapped) return mapped;
+    // Unknown/legacy position but branch_manager+ → don't lock them out.
+    return hasRole("branch_manager") ? ALL : ["residents"];
+  }
+
+  function canAccess(page: string): boolean {
+    const a = allowedPages();
+    return a === ALL || a.includes(page);
+  }
+
+  /** First page the user is allowed to see — used as the post-login landing. */
+  function firstAllowed(): string {
+    const a = allowedPages();
+    if (a === ALL) return "residents";
+    return a[0] ?? "residents";
+  }
+
+  // Korean label for the user's position (for the header chip).
+  const positionLabel = computed(() => {
+    const map: Record<string, string> = {
+      branch_manager: "시설장",
+      office_manager: "행정",
+      receptionist: "접수",
+      dietitian: "영양사",
+      it: "IT 지원",
+    };
+    return map[me.value?.position ?? ""] ?? null;
+  });
+
+  return {
+    me, hydrating, isLoggedIn, role, branchName, tenantName, positionLabel,
+    hydrate, login, logout, hasRole, canAccess, firstAllowed,
+  };
 });

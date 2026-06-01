@@ -7,17 +7,7 @@ const session = useServerSessionStore();
 const router = useRouter();
 const miniMode = ref(false);
 
-// Server permission ladder (matches router/index.ts). Higher = more access.
-//   caregiver < nurse < branch_manager < hq < super_admin
-const roleLevel: Record<string, number> = {
-  caregiver: 1,
-  nurse: 2,
-  branch_manager: 3,
-  hq: 4,
-  super_admin: 5,
-};
-
-// Korean display label per server role.
+// Korean display label per server role (fallback when no position).
 const roleLabel: Record<string, string> = {
   caregiver: "요양보호사",
   nurse: "간호사",
@@ -26,54 +16,45 @@ const roleLabel: Record<string, string> = {
   super_admin: "최고관리자",
 };
 
-interface NavItem { to: string; icon: string; label: string; minRole: number; }
+// `key` matches the route name; nav is gated by position via session.canAccess.
+interface NavItem { to: string; key: string; icon: string; label: string; }
 interface NavGroup { heading: string; items: NavItem[]; }
 
-// minRole values mirror router/index.ts so shell + routes never disagree.
 const navGroups: NavGroup[] = [
   {
     heading: "",
     items: [
-      { to: "/residents", icon: "o_people", label: "어르신", minRole: 1 },
+      { to: "/residents", key: "residents", icon: "o_people", label: "어르신" },
     ],
   },
   {
     heading: "직원",
     items: [
-      { to: "/staff",    icon: "o_badge",          label: "직원",      minRole: 3 },
-      { to: "/schedule", icon: "o_calendar_month", label: "근무일정",  minRole: 1 },
-      { to: "/leave",    icon: "o_event_busy",     label: "휴가 신청", minRole: 1 },
+      { to: "/staff",    key: "staff",    icon: "o_badge",          label: "직원" },
+      { to: "/schedule", key: "schedule", icon: "o_calendar_month", label: "근무일정" },
+      { to: "/leave",    key: "leave",    icon: "o_event_busy",     label: "휴가 신청" },
     ],
   },
   {
     heading: "서비스",
     items: [
-      { to: "/media",         icon: "o_photo_camera", label: "사진 승인", minRole: 1 },
-      { to: "/notifications", icon: "o_mail",         label: "알림",      minRole: 3 },
-      { to: "/reports",       icon: "o_description",  label: "보고서",    minRole: 3 },
-      { to: "/meals",         icon: "o_restaurant",   label: "식단",      minRole: 1 },
+      { to: "/notifications", key: "notifications", icon: "o_mail",        label: "알림" },
+      { to: "/reports",       key: "reports",       icon: "o_description", label: "보고서" },
+      { to: "/meals",         key: "meals",         icon: "o_restaurant",  label: "식단" },
     ],
   },
   {
     heading: "관리",
     items: [
-      { to: "/accounting", icon: "o_account_balance",   label: "정산",   minRole: 4 },
-      { to: "/settings",   icon: "o_settings",          label: "설정",   minRole: 3 },
-    ],
-  },
-  {
-    heading: "",
-    items: [
-      { to: "/help", icon: "o_help", label: "도움말", minRole: 1 },
+      { to: "/accounting", key: "accounting", icon: "o_account_balance", label: "정산" },
+      { to: "/settings",   key: "settings",   icon: "o_settings",        label: "설정" },
     ],
   },
 ];
 
-const myLevel = computed(() => roleLevel[session.me?.role ?? ""] ?? 0);
-
 const visibleGroups = computed(() =>
   navGroups
-    .map((g) => ({ ...g, items: g.items.filter((i) => myLevel.value >= i.minRole) }))
+    .map((g) => ({ ...g, items: g.items.filter((i) => session.canAccess(i.key)) }))
     .filter((g) => g.items.length > 0),
 );
 
@@ -81,8 +62,9 @@ const visibleGroups = computed(() =>
 const stationName = computed(
   () => session.branchName ?? session.tenantName ?? "케어닥",
 );
+// Prefer the job-title label (시설장/행정/접수/영양사/IT), else the role.
 const myRoleLabel = computed(
-  () => roleLabel[session.me?.role ?? ""] ?? session.me?.role ?? "",
+  () => session.positionLabel ?? roleLabel[session.me?.role ?? ""] ?? session.me?.role ?? "",
 );
 
 async function handleLogout() {

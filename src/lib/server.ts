@@ -27,6 +27,7 @@ interface MeUser {
   branch_id: string | null;
   branch_name: string | null;
   tenant_name: string | null;
+  position: string | null;
 }
 
 let backing: Store | null = null;

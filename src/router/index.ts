@@ -1,16 +1,6 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 import { useServerSessionStore } from "@/stores/server-session";
 
-// Server role hierarchy: higher number = more access
-// caregiver < nurse < branch_manager < hq < super_admin
-const roleLevel: Record<string, number> = {
-  caregiver: 1,
-  nurse: 2,
-  branch_manager: 3,
-  hq: 4,
-  super_admin: 5,
-};
-
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -34,8 +24,6 @@ const router = createRouter({
         { path: "meals",         name: "meals",         component: () => import("@/pages/MealsPage.vue"),        meta: { minRole: 1 } },
         { path: "schedule",      name: "schedule",      component: () => import("@/pages/SchedulePage.vue"),     meta: { minRole: 1 } },
         { path: "leave",         name: "leave",         component: () => import("@/pages/LeavePage.vue"),        meta: { minRole: 1 } },
-        { path: "media",         name: "media",         component: () => import("@/pages/MediaPage.vue"),        meta: { minRole: 1 } },
-        { path: "help",          name: "help",          component: () => import("@/pages/HelpPage.vue"),         meta: { minRole: 1 } },
         { path: "notifications", name: "notifications", component: () => import("@/pages/NotificationsPage.vue"),meta: { minRole: 3 } },
         { path: "staff",         name: "staff",         component: () => import("@/pages/StaffPage.vue"),        meta: { minRole: 3 } },
         { path: "reports",       name: "reports",       component: () => import("@/pages/ReportsPage.vue"),      meta: { minRole: 3 } },
@@ -60,17 +48,16 @@ router.beforeEach(async (to) => {
     return { name: "login" };
   }
 
-  // Redirect already-logged-in users away from login page
+  // Redirect already-logged-in users away from login page → their first page
   if (to.name === "login" && session.isLoggedIn) {
-    return { name: "residents" };
+    return { name: session.firstAllowed() };
   }
 
-  // Check role-based access for protected routes
-  const required = to.meta.minRole as number | undefined;
-  if (required && session.isLoggedIn && session.me) {
-    const userLevel = roleLevel[session.me.role] ?? 0;
-    if (userLevel < required) {
-      return { name: "residents" };
+  // Position-based access: bounce to the user's first allowed page if the
+  // target route isn't permitted for their job title.
+  if (session.isLoggedIn && to.name && typeof to.name === "string") {
+    if (!to.meta.public && !session.canAccess(to.name)) {
+      return { name: session.firstAllowed() };
     }
   }
 });
