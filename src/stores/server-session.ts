@@ -68,7 +68,6 @@ export const useServerSessionStore = defineStore("server-session", () => {
     it: ALL,                                                               // 본사 IT 지원 — everything
     office_manager: ["residents", "schedule", "leave", "reports", "accounting", "settings"], // 행정
     receptionist:   ["residents", "schedule", "leave", "notifications", "settings"],          // 접수
-    dietitian:      ["residents", "meals", "settings"],                    // 영양사
   };
 
   /** Pages this user may open: "*" = all, or an explicit list. */
@@ -100,7 +99,6 @@ export const useServerSessionStore = defineStore("server-session", () => {
       branch_manager: "시설장",
       office_manager: "행정",
       receptionist: "접수",
-      dietitian: "영양사",
       it: "IT 지원",
     };
     return map[me.value?.position ?? ""] ?? null;

@@ -40,7 +40,6 @@ const navGroups: NavGroup[] = [
     items: [
       { to: "/notifications", key: "notifications", icon: "o_mail",        label: "알림" },
       { to: "/reports",       key: "reports",       icon: "o_description", label: "보고서" },
-      { to: "/meals",         key: "meals",         icon: "o_restaurant",  label: "식단" },
     ],
   },
   {
@@ -62,7 +61,7 @@ const visibleGroups = computed(() =>
 const stationName = computed(
   () => session.branchName ?? session.tenantName ?? "케어닥",
 );
-// Prefer the job-title label (시설장/행정/접수/영양사/IT), else the role.
+// Prefer the job-title label (시설장/행정/접수/IT), else the role.
 const myRoleLabel = computed(
   () => session.positionLabel ?? roleLabel[session.me?.role ?? ""] ?? session.me?.role ?? "",
 );

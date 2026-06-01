@@ -104,7 +104,6 @@ const demoAccounts = [
   { label: "시설장", email: "manager.seoul-hub@demo.com" },
   { label: "행정", email: "admin.seoul-hub@demo.com" },
   { label: "접수", email: "reception.seoul-hub@demo.com" },
-  { label: "영양사", email: "nutrition.seoul-hub@demo.com" },
   { label: "IT 지원", email: "it.support@demo.com" },
 ];
 
