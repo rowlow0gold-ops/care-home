@@ -144,6 +144,66 @@ const entries   = ref<ScheduleEntry[]>([]);
 const loading   = ref(false);
 const staffList = ref<StaffOption[]>([]);
 
+// ── Draft mode (저장/되돌리기/비우기) ──────────────────────────────────────────
+// Edits stay local in `entries`; nothing hits the server until 저장.
+const savedSnapshot = ref<ScheduleEntry[]>([]);
+const dirty = ref(false);
+const saving = ref(false);
+let tempSeq = 0;
+function tempId() { return `new-${++tempSeq}`; }
+function isNew(id: string) { return id.startsWith("new-"); }
+function markDirty() { dirty.value = true; }
+
+function shiftChanged(a: ScheduleEntry, b: ScheduleEntry) {
+  return a.staff_id !== b.staff_id || a.shift_date !== b.shift_date ||
+    a.shift_start !== b.shift_start || a.shift_end !== b.shift_end ||
+    a.shift_hours !== b.shift_hours || (a.notes ?? "") !== (b.notes ?? "");
+}
+
+async function saveDraft() {
+  if (saving.value) return;
+  saving.value = true;
+  try {
+    const savedById = new Map(savedSnapshot.value.map((e) => [e.id, e]));
+    const draftIds = new Set(entries.value.map((e) => e.id));
+    // creates + updates
+    for (const e of entries.value) {
+      const payload = {
+        user_id: e.staff_id, shift_date: e.shift_date,
+        shift_start: e.shift_start, shift_end: e.shift_end,
+        shift_hours: e.shift_hours, notes: e.notes ?? null,
+      };
+      if (isNew(e.id)) {
+        await server.createRoster(payload);
+      } else {
+        const orig = savedById.get(e.id);
+        if (orig && shiftChanged(orig, e)) await server.updateRoster(e.id, payload);
+      }
+    }
+    // deletes (in saved baseline but removed from draft)
+    for (const e of savedSnapshot.value) {
+      if (!isNew(e.id) && !draftIds.has(e.id)) await server.deleteRoster(e.id);
+    }
+    $q.notify({ type: "positive", message: "근무일정을 저장했습니다." });
+    await loadSchedule();
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `저장 실패: ${e?.message ?? e}` });
+  } finally {
+    saving.value = false;
+  }
+}
+function rollbackDraft() {
+  entries.value = savedSnapshot.value.map((e) => ({ ...e }));
+  dirty.value = false;
+  $q.notify({ type: "info", message: "변경사항을 되돌렸습니다." });
+}
+function clearDraft() {
+  $q.dialog({
+    title: "비우기", message: "현재 보이는 기간의 근무를 모두 비웁니다. (저장 시 반영)",
+    cancel: { label: "취소", flat: true }, ok: { label: "비우기", color: "negative", unelevated: true }, persistent: true,
+  }).onOk(() => { entries.value = []; dirty.value = true; });
+}
+
 // ── Teams (조) — "split by shift" filter ───────────────────────────────────────
 const teams = ref<Team[]>([]);
 const selectedTeam = ref<string>("");   // "" = 전체
@@ -224,6 +284,9 @@ async function loadSchedule() {
       shift_hours: r.shift_hours,
       notes:       r.notes,
     }));
+    // Draft baseline — edits stay local until 저장.
+    savedSnapshot.value = entries.value.map(e => ({ ...e }));
+    dirty.value = false;
   } catch (e: any) {
     $q.notify({ type: "negative", message: `근무일정을 불러오지 못했습니다: ${e?.message ?? e}` });
   } finally {
@@ -348,29 +411,26 @@ async function deleteCustomType(p: Preset) {
   customPresets.value = customPresets.value.filter((x) => x.label !== p.label);
   await savePresets();
 }
-async function submitAdd() {
+function staffNameById(id: string): string {
+  return staffList.value.find((s) => s.value === id)?.label
+    ?? entries.value.find((e) => e.staff_id === id)?.staff_name
+    ?? "";
+}
+function addLocal(staffId: string, date: string, start: string, end: string, hours: number, notes: string | null) {
+  entries.value.push({
+    id: tempId(), staff_id: staffId, staff_name: staffNameById(staffId),
+    shift_date: date, shift_start: start, shift_end: end, shift_hours: hours, notes,
+  });
+  markDirty();
+}
+function submitAdd() {
   if (!form.value.staff_id || !form.value.shift_date) {
     $q.notify({ type: "negative", message: "직원과 날짜를 선택하세요." });
     return;
   }
-  submitting.value = true;
-  try {
-    await server.createRoster({
-      user_id:     form.value.staff_id,
-      shift_date:  form.value.shift_date,
-      shift_start: form.value.shift_start,
-      shift_end:   form.value.shift_end,
-      shift_hours: form.value.shift_hours,
-      notes:       form.value.notes || null,
-    });
-    $q.notify({ type: "positive", message: "근무가 추가되었습니다." });
-    showAdd.value = false;
-    await loadSchedule();
-  } catch (e: any) {
-    $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` });
-  } finally {
-    submitting.value = false;
-  }
+  addLocal(form.value.staff_id, form.value.shift_date, form.value.shift_start,
+    form.value.shift_end, form.value.shift_hours, form.value.notes || null);
+  showAdd.value = false;
 }
 
 // ── Drag & drop (pointer-events based — HTML5 DnD is broken in WKWebView) ────
@@ -429,49 +489,27 @@ async function onPointerUp(e: PointerEvent) {
   const staffId = cell.dataset.staffId ? cell.dataset.staffId : null;
   const date    = new Date(cell.dataset.date + "T00:00:00");
 
-  // ── Move existing entry ────────────────────────────────────────────────────
+  // ── Move existing entry (local) ────────────────────────────────────────────
   if (payload.kind === "entry") {
     const entry = entries.value.find(en => en.id === payload.id);
     if (!entry) return;
     const newDate    = localDateStr(date);
     const newStaffId = staffId ?? entry.staff_id;
     if (entry.staff_id === newStaffId && entry.shift_date === newDate) return;
-    try {
-      await server.updateRoster(entry.id, {
-        user_id:     newStaffId,
-        shift_date:  newDate,
-        shift_start: entry.shift_start,
-        shift_end:   entry.shift_end,
-        shift_hours: entry.shift_hours,
-        notes:       entry.notes ?? null,
-      });
-      await loadSchedule();
-      await nextTick();
-      droppedId.value = entry.id;
-      setTimeout(() => { droppedId.value = null; }, 450);
-    } catch (err: any) {
-      $q.notify({ type: "negative", message: `근무 이동 실패: ${err?.message ?? err}` });
-    }
+    entry.staff_id = newStaffId;
+    entry.staff_name = staffNameById(newStaffId) || entry.staff_name;
+    entry.shift_date = newDate;
+    markDirty();
+    await nextTick();
+    droppedId.value = entry.id;
+    setTimeout(() => { droppedId.value = null; }, 450);
     return;
   }
 
-  // ── Drop preset ────────────────────────────────────────────────────────────
+  // ── Drop preset (local create) ─────────────────────────────────────────────
   if (payload.kind === "preset" && staffId !== null) {
     const preset = payload.preset;
-    try {
-      await server.createRoster({
-        user_id:     staffId,
-        shift_date:  localDateStr(date),
-        shift_start: preset.start,
-        shift_end:   preset.end,
-        shift_hours: preset.hours,
-        notes:       null,
-      });
-      $q.notify({ type: "positive", message: `${preset.label} 추가됨.` });
-      await loadSchedule();
-    } catch (err: any) {
-      $q.notify({ type: "negative", message: `실패: ${err?.message ?? err}` });
-    }
+    addLocal(staffId, localDateStr(date), preset.start, preset.end, preset.hours, null);
   }
 }
 
@@ -519,26 +557,18 @@ function openEditDialog(entry: ScheduleEntry) {
   };
   showEdit.value = true;
 }
-async function submitEdit() {
+function submitEdit() {
   if (!editingId.value || !editingStaffId.value) return;
-  editSubmitting.value = true;
-  try {
-    await server.updateRoster(editingId.value, {
-      user_id:     editingStaffId.value,
-      shift_date:  editForm.value.shift_date,
-      shift_start: editForm.value.shift_start,
-      shift_end:   editForm.value.shift_end,
-      shift_hours: editForm.value.shift_hours,
-      notes:       editForm.value.notes || null,
-    });
-    $q.notify({ type: "positive", message: "근무가 수정되었습니다." });
-    showEdit.value = false;
-    await loadSchedule();
-  } catch (e: any) {
-    $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` });
-  } finally {
-    editSubmitting.value = false;
+  const entry = entries.value.find((e) => e.id === editingId.value);
+  if (entry) {
+    entry.shift_date  = editForm.value.shift_date;
+    entry.shift_start = editForm.value.shift_start;
+    entry.shift_end   = editForm.value.shift_end;
+    entry.shift_hours = editForm.value.shift_hours;
+    entry.notes       = editForm.value.notes || null;
+    markDirty();
   }
+  showEdit.value = false;
 }
 
 // ── Month cell expand ─────────────────────────────────────────────────────────
@@ -551,23 +581,10 @@ function toggleExpand(date: Date) {
 }
 function isExpanded(date: Date) { return expandedDays.value.has(localDateStr(date)); }
 
-// ── Delete shift ──────────────────────────────────────────────────────────────
-async function deleteShift(entry: ScheduleEntry) {
-  $q.dialog({
-    title: "근무 삭제",
-    message: `${entry.staff_name}님의 ${entry.shift_date} ${entry.shift_start}–${entry.shift_end} 근무를 삭제할까요?`,
-    cancel: { label: "취소", flat: true },
-    ok:     { label: "삭제", color: "negative", unelevated: true },
-    persistent: true,
-  }).onOk(async () => {
-    try {
-      await server.deleteRoster(entry.id);
-      $q.notify({ type: "positive", message: "근무가 삭제되었습니다." });
-      await loadSchedule();
-    } catch (e: any) {
-      $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` });
-    }
-  });
+// ── Delete shift (local) ────────────────────────────────────────────────────
+function deleteShift(entry: ScheduleEntry) {
+  entries.value = entries.value.filter((e) => e.id !== entry.id);
+  markDirty();
 }
 </script>
 
@@ -576,10 +593,20 @@ async function deleteShift(entry: ScheduleEntry) {
     <!-- Header -->
     <div class="row items-center q-mb-md q-gutter-sm">
       <div class="col">
-        <div class="text-h5 text-weight-bold">근무일정</div>
-        <div class="text-caption text-grey-6">
-          {{ canCreate ? "직원 근무 일정 관리" : "직원 근무 일정 (읽기 전용)" }}
+        <div class="text-h5 text-weight-bold">
+          근무일정
+          <q-badge v-if="dirty" color="orange" class="q-ml-sm" label="미저장" />
         </div>
+        <div class="text-caption text-grey-6">
+          {{ canCreate ? "변경 후 저장하세요. 저장 전까지는 반영되지 않습니다." : "직원 근무 일정 (읽기 전용)" }}
+        </div>
+      </div>
+
+      <!-- Draft controls -->
+      <div v-if="canCreate" class="col-auto q-gutter-xs">
+        <q-btn color="primary" icon="o_save" label="저장" unelevated dense :disable="!dirty" :loading="saving" @click="saveDraft" />
+        <q-btn outline color="grey-8" icon="o_undo" label="되돌리기" dense :disable="!dirty" @click="rollbackDraft" />
+        <q-btn flat color="negative" icon="o_clear_all" label="비우기" dense @click="clearDraft" />
       </div>
 
       <div class="col-auto" style="min-width: 160px">
