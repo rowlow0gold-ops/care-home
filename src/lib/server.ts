@@ -342,10 +342,20 @@ export const server = {
   },
 
   // === roster (근무일정) — free-form per-branch shift roster ===
-  roster(start: string, end: string) {
+  roster(start: string, end: string, teamId?: string) {
+    const t = teamId ? `&team_id=${encodeURIComponent(teamId)}` : "";
     return fetchJson<RosterEntry[]>(
-      `/api/v1/roster?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+      `/api/v1/roster?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}${t}`,
     );
+  },
+  teams() {
+    return fetchJson<Team[]>("/api/v1/teams");
+  },
+  assignTeam(userId: string, teamId: string | null) {
+    return fetchJson(`/api/v1/staff/${userId}/team`, {
+      method: "PATCH",
+      body: JSON.stringify({ team_id: teamId }),
+    });
   },
   createRoster(payload: UpsertRoster) {
     return fetchJson<RosterEntry>("/api/v1/roster", {
@@ -523,6 +533,19 @@ export interface CareLogRow {
   category: string;
   body: string;
   flagged: boolean;
+}
+
+export interface Team {
+  id: string;
+  branch_id: string;
+  branch_name: string | null;
+  name: string;
+  color_hue: number;
+  sort_order: number;
+  shift_start_hm: string;
+  shift_end_hm: string;
+  member_count: number;
+  created_at: string;
 }
 
 export interface RosterEntry {

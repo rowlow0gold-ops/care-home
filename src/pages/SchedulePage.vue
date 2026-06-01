@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { Store } from "@tauri-apps/plugin-store";
 import { useQuasar } from "quasar";
-import { server } from "@/lib/server";
+import { server, type Team } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
@@ -126,6 +126,17 @@ const entries   = ref<ScheduleEntry[]>([]);
 const loading   = ref(false);
 const staffList = ref<StaffOption[]>([]);
 
+// ── Teams (조) — "split by shift" filter ───────────────────────────────────────
+const teams = ref<Team[]>([]);
+const selectedTeam = ref<string>("");   // "" = 전체
+const teamOptions = computed(() => [
+  { label: "전체 조", value: "" },
+  ...teams.value.map((t) => ({ label: `${t.name} (${t.member_count})`, value: t.id })),
+]);
+async function loadTeams() {
+  try { teams.value = await server.teams(); } catch { teams.value = []; }
+}
+
 const staffRows = computed<StaffOption[]>(() => {
   if (staffList.value.length > 0) return staffList.value;
   // Fallback: derive roster rows from the entries themselves.
@@ -182,7 +193,7 @@ async function loadSchedule() {
   try {
     const start = viewMode.value === "week" ? weekStartStr.value : monthStartStr.value;
     const end   = viewMode.value === "week" ? weekEndStr.value   : monthEndStr.value;
-    const rows = await server.roster(start, end);
+    const rows = await server.roster(start, end, selectedTeam.value || undefined);
     entries.value = rows.map(r => ({
       id:          r.id,
       staff_id:    r.user_id,
@@ -216,7 +227,14 @@ async function loadStaffList() {
 watch(viewMode, loadSchedule);
 watch([weekStartStr, weekEndStr], () => { if (viewMode.value === "week")   loadSchedule(); });
 watch([monthStartStr, monthEndStr], () => { if (viewMode.value === "month") loadSchedule(); });
-onMounted(async () => { await loadPresets(); await loadStaffList(); await loadSchedule(); });
+watch(selectedTeam, async () => {
+  // When a 조 is selected, rows are the team's workers (derived from the
+  // team-filtered roster); 전체 reloads the full branch staff list.
+  if (selectedTeam.value) staffList.value = [];
+  else await loadStaffList();
+  await loadSchedule();
+});
+onMounted(async () => { await loadPresets(); await loadTeams(); await loadStaffList(); await loadSchedule(); });
 
 // ── Shift presets (근무 유형) ─────────────────────────────────────────────────
 interface Preset { label: string; start: string; end: string; hours: number }
@@ -544,6 +562,14 @@ async function deleteShift(entry: ScheduleEntry) {
         </div>
       </div>
 
+      <div class="col-auto" style="min-width: 160px">
+        <q-select
+          v-model="selectedTeam"
+          :options="teamOptions"
+          label="조"
+          outlined dense emit-value map-options
+        />
+      </div>
       <div class="col-auto">
         <q-btn-toggle
           v-model="viewMode"
