@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from "vue";
+import { Store } from "@tauri-apps/plugin-store";
 import { useQuasar } from "quasar";
 import { server } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
@@ -215,32 +216,56 @@ async function loadStaffList() {
 watch(viewMode, loadSchedule);
 watch([weekStartStr, weekEndStr], () => { if (viewMode.value === "week")   loadSchedule(); });
 watch([monthStartStr, monthEndStr], () => { if (viewMode.value === "month") loadSchedule(); });
-onMounted(async () => { await loadStaffList(); await loadSchedule(); });
+onMounted(async () => { await loadPresets(); await loadStaffList(); await loadSchedule(); });
 
-// ── Shift presets ─────────────────────────────────────────────────────────────
-const SHIFT_PRESETS = [
+// ── Shift presets (근무 유형) ─────────────────────────────────────────────────
+interface Preset { label: string; start: string; end: string; hours: number }
+const DEFAULT_PRESETS: Preset[] = [
   { label: "주간 12h (07:00–19:00)",   start: "07:00", end: "19:00", hours: 12 },
   { label: "야간 12h (19:00–07:00)",   start: "19:00", end: "07:00", hours: 12 },
   { label: "오전 8h (07:00–15:00)",    start: "07:00", end: "15:00", hours:  8 },
   { label: "오후 8h (15:00–23:00)",    start: "15:00", end: "23:00", hours:  8 },
   { label: "야간 8h (23:00–07:00)",    start: "23:00", end: "07:00", hours:  8 },
-  { label: "직접입력",                 start: "",      end: "",      hours:  0 },
 ];
+const MANUAL: Preset = { label: "직접", start: "", end: "", hours: 0 };
 
-// ── Add shift (cell hover button) ─────────────────────────────────────────────
+// Custom 근무 유형 — saved locally (per device), deletable. Defaults are locked.
+const customPresets = ref<Preset[]>([]);
+const allPresets = computed(() => [...DEFAULT_PRESETS, ...customPresets.value]);
+const dialogPresets = computed(() => [...allPresets.value, MANUAL]);
+
+let presetStore: Store | null = null;
+async function presetsStore() {
+  if (!presetStore) presetStore = await Store.load("schedule.dat");
+  return presetStore;
+}
+async function loadPresets() {
+  try {
+    const s = await presetsStore();
+    customPresets.value = (await s.get<Preset[]>("custom_presets")) ?? [];
+  } catch { customPresets.value = []; }
+}
+async function savePresets() {
+  const s = await presetsStore();
+  await s.set("custom_presets", customPresets.value);
+  await s.save();
+}
+function isCustom(p: Preset) { return customPresets.value.some((c) => c.label === p.label); }
+
+// ── Add shift ─────────────────────────────────────────────────────────────────
 const showAdd    = ref(false);
 const submitting = ref(false);
 const form = ref({
   staff_id:    null as string | null,
   shift_date:  "",
-  preset:      SHIFT_PRESETS[0],
+  preset:      DEFAULT_PRESETS[0],
   shift_start: "07:00",
   shift_end:   "19:00",
   shift_hours: 12,
   notes:       "",
 });
 function applyPreset() {
-  if (form.value.preset.label !== "직접입력") {
+  if (form.value.preset.label !== "직접") {
     form.value.shift_start = form.value.preset.start;
     form.value.shift_end   = form.value.preset.end;
     form.value.shift_hours = form.value.preset.hours;
@@ -250,7 +275,7 @@ function openAddForCell(staffId: string, date: Date) {
   form.value = {
     staff_id:    staffId,
     shift_date:  localDateStr(date),
-    preset:      SHIFT_PRESETS[0],
+    preset:      DEFAULT_PRESETS[0],
     shift_start: "07:00",
     shift_end:   "19:00",
     shift_hours: 12,
@@ -258,18 +283,32 @@ function openAddForCell(staffId: string, date: Date) {
   };
   showAdd.value = true;
 }
-// 직접입력 — open the add dialog with a blank custom shift (pick staff/date/time).
-function openCustomAdd() {
-  form.value = {
-    staff_id:    null,
-    shift_date:  "",
-    preset:      SHIFT_PRESETS.find((p) => p.label === "직접입력")!,
-    shift_start: "",
-    shift_end:   "",
-    shift_hours: 0,
-    notes:       "",
-  };
-  showAdd.value = true;
+
+// ── 직접입력 = define a new 근무 유형 (added to palette, persisted) ────────────
+const showNewType = ref(false);
+const newType = ref<Preset>({ label: "", start: "07:00", end: "15:00", hours: 8 });
+function openNewType() {
+  newType.value = { label: "", start: "07:00", end: "15:00", hours: 8 };
+  showNewType.value = true;
+}
+async function addNewType() {
+  const t = newType.value;
+  if (!t.label.trim() || !/^\d{2}:\d{2}$/.test(t.start) || !/^\d{2}:\d{2}$/.test(t.end)) {
+    $q.notify({ type: "negative", message: "이름·시작·종료(HH:MM)를 입력하세요." });
+    return;
+  }
+  if (allPresets.value.some((p) => p.label === t.label.trim())) {
+    $q.notify({ type: "negative", message: "같은 이름의 근무 유형이 이미 있습니다." });
+    return;
+  }
+  customPresets.value = [...customPresets.value, { ...t, label: t.label.trim() }];
+  await savePresets();
+  showNewType.value = false;
+  $q.notify({ type: "positive", message: "근무 유형이 추가되었습니다." });
+}
+async function deleteCustomType(p: Preset) {
+  customPresets.value = customPresets.value.filter((x) => x.label !== p.label);
+  await savePresets();
 }
 async function submitAdd() {
   if (!form.value.staff_id || !form.value.shift_date) {
@@ -297,7 +336,6 @@ async function submitAdd() {
 }
 
 // ── Drag & drop (pointer-events based — HTML5 DnD is broken in WKWebView) ────
-type Preset = typeof SHIFT_PRESETS[0];
 type DragState =
   | { kind: "entry";  id: string }
   | { kind: "preset"; preset: Preset }
@@ -382,21 +420,6 @@ async function onPointerUp(e: PointerEvent) {
   // ── Drop preset ────────────────────────────────────────────────────────────
   if (payload.kind === "preset" && staffId !== null) {
     const preset = payload.preset;
-
-    if (preset.label === "직접입력") {
-      form.value = {
-        staff_id:    staffId,
-        shift_date:  localDateStr(date),
-        preset:      preset,
-        shift_start: "",
-        shift_end:   "",
-        shift_hours: 0,
-        notes:       "",
-      };
-      showAdd.value = true;
-      return;
-    }
-
     try {
       await server.createRoster({
         user_id:     staffId,
@@ -434,11 +457,11 @@ const showEdit       = ref(false);
 const editingId      = ref<string | null>(null);
 const editingStaffId = ref<string | null>(null);
 const editSubmitting = ref(false);
-const editForm = ref({
-  shift_date: "", preset: SHIFT_PRESETS[0], shift_start: "07:00", shift_end: "19:00", shift_hours: 12, notes: "",
+const editForm = ref<{ shift_date: string; preset: Preset; shift_start: string; shift_end: string; shift_hours: number; notes: string }>({
+  shift_date: "", preset: DEFAULT_PRESETS[0], shift_start: "07:00", shift_end: "19:00", shift_hours: 12, notes: "",
 });
 function applyEditPreset() {
-  if (editForm.value.preset.label !== "직접입력") {
+  if (editForm.value.preset.label !== "직접") {
     editForm.value.shift_start = editForm.value.preset.start;
     editForm.value.shift_end   = editForm.value.preset.end;
     editForm.value.shift_hours = editForm.value.preset.hours;
@@ -448,9 +471,9 @@ function openEditDialog(entry: ScheduleEntry) {
   if (!canEdit.value) return;
   editingId.value      = entry.id;
   editingStaffId.value = entry.staff_id;
-  const matched = SHIFT_PRESETS.find(
+  const matched = allPresets.value.find(
     p => p.start === entry.shift_start && p.end === entry.shift_end && p.hours === entry.shift_hours
-  ) ?? SHIFT_PRESETS.find(p => p.label === "직접입력")!;
+  ) ?? MANUAL;
   editForm.value = {
     shift_date: entry.shift_date, preset: matched,
     shift_start: entry.shift_start, shift_end: entry.shift_end,
@@ -538,7 +561,7 @@ async function deleteShift(entry: ScheduleEntry) {
       </div>
       <div class="row q-gutter-sm items-center">
         <div
-          v-for="p in SHIFT_PRESETS.filter(p => p.label !== '직접입력')"
+          v-for="p in allPresets"
           :key="p.label"
           class="palette-chip"
           :class="`palette-chip--${presetColor(p)}`"
@@ -546,16 +569,20 @@ async function deleteShift(entry: ScheduleEntry) {
         >
           <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs opacity-60" />
           {{ p.label }}
+          <q-icon
+            v-if="isCustom(p) && canDelete"
+            name="o_close"
+            size="xs"
+            class="q-ml-xs palette-del"
+            @pointerdown.stop
+            @click.stop="deleteCustomType(p)"
+          />
         </div>
         <q-btn
-          outline
-          no-caps
-          dense
-          color="grey-8"
-          icon="o_edit"
-          label="직접입력"
+          outline no-caps dense color="grey-8" icon="o_add"
+          label="근무 유형 추가"
           class="palette-custom-btn"
-          @click="openCustomAdd"
+          @click="openNewType"
         />
       </div>
     </div>
@@ -725,8 +752,8 @@ async function deleteShift(entry: ScheduleEntry) {
               </q-date>
             </q-popup-proxy>
           </div>
-          <q-select v-model="form.preset" :options="SHIFT_PRESETS" label="근무 유형" outlined dense option-label="label" @update:model-value="applyPreset" />
-          <template v-if="form.preset.label === '직접입력'">
+          <q-select v-model="form.preset" :options="dialogPresets" label="근무 유형" outlined dense option-label="label" @update:model-value="applyPreset" />
+          <template v-if="form.preset.label === '직접'">
             <div class="row q-gutter-sm">
               <q-input v-model="form.shift_start" label="시작" outlined dense class="col" hint="HH:MM" />
               <q-input v-model="form.shift_end"   label="종료" outlined dense class="col" hint="HH:MM" />
@@ -768,8 +795,8 @@ async function deleteShift(entry: ScheduleEntry) {
               </q-date>
             </q-popup-proxy>
           </div>
-          <q-select v-model="editForm.preset" :options="SHIFT_PRESETS" label="근무 유형" outlined dense option-label="label" @update:model-value="applyEditPreset" />
-          <template v-if="editForm.preset.label === '직접입력'">
+          <q-select v-model="editForm.preset" :options="dialogPresets" label="근무 유형" outlined dense option-label="label" @update:model-value="applyEditPreset" />
+          <template v-if="editForm.preset.label === '직접'">
             <div class="row q-gutter-sm">
               <q-input v-model="editForm.shift_start" label="시작" outlined dense class="col" hint="HH:MM" />
               <q-input v-model="editForm.shift_end"   label="종료" outlined dense class="col" hint="HH:MM" />
@@ -784,6 +811,29 @@ async function deleteShift(entry: ScheduleEntry) {
         <q-card-actions align="right" class="q-px-md q-pb-md">
           <q-btn flat label="취소" v-close-popup />
           <q-btn color="primary" label="저장" unelevated :loading="editSubmitting" @click="submitEdit" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- ── 새 근무 유형 (custom shift type) ─────────────────────────────────── -->
+    <q-dialog v-model="showNewType" persistent>
+      <q-card style="min-width: 380px">
+        <q-card-section class="row items-center q-pb-none">
+          <div class="text-h6">새 근무 유형</div>
+          <q-space />
+          <q-btn icon="o_close" flat round dense v-close-popup />
+        </q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-input v-model="newType.label" label="이름 (예: 오후 단축)" outlined dense />
+          <div class="row q-gutter-sm">
+            <q-input v-model="newType.start" label="시작" outlined dense class="col" hint="HH:MM" mask="##:##" />
+            <q-input v-model="newType.end" label="종료" outlined dense class="col" hint="HH:MM" mask="##:##" />
+            <q-input v-model.number="newType.hours" label="시간" type="number" outlined dense class="col" />
+          </div>
+        </q-card-section>
+        <q-card-actions align="right" class="q-px-md q-pb-md">
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="추가" unelevated @click="addNewType" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -902,6 +952,8 @@ async function deleteShift(entry: ScheduleEntry) {
 .drag-palette { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 16px; }
 .palette-chip { display: inline-flex; align-items: center; padding: 6px 14px; border-radius: 20px; font-size: 0.78rem; font-weight: 500; cursor: grab; user-select: none; transition: transform 0.12s, box-shadow 0.12s; touch-action: none; }
 .palette-chip:hover  { transform: translateY(-2px); box-shadow: 0 3px 8px rgba(0,0,0,0.12); }
+.palette-del { cursor: pointer; opacity: 0.55; }
+.palette-del:hover { opacity: 1; }
 .palette-chip:active { cursor: grabbing; transform: scale(0.97); }
 
 /* ── Drag ghost ─────────────────────────────────────────────────────────────── */
