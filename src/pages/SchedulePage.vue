@@ -255,6 +255,19 @@ function openAddForCell(staffId: string, date: Date) {
   };
   showAdd.value = true;
 }
+// 직접입력 — open the add dialog with a blank custom shift (pick staff/date/time).
+function openCustomAdd() {
+  form.value = {
+    staff_id:    null,
+    shift_date:  "",
+    preset:      SHIFT_PRESETS.find((p) => p.label === "직접입력")!,
+    shift_start: "",
+    shift_end:   "",
+    shift_hours: 0,
+    notes:       "",
+  };
+  showAdd.value = true;
+}
 async function submitAdd() {
   if (!form.value.staff_id || !form.value.shift_date) {
     $q.notify({ type: "negative", message: "직원과 날짜를 선택하세요." });
@@ -528,11 +541,16 @@ async function deleteShift(entry: ScheduleEntry) {
           <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs opacity-60" />
           {{ p.label }}
         </div>
-        <div class="palette-chip palette-chip--custom"
-             @pointerdown="startDrag($event, { kind: 'preset', preset: SHIFT_PRESETS.find(p => p.label === '직접입력')! }, '직접입력', 'custom')">
-          <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs opacity-60" />
-          직접입력
-        </div>
+        <q-btn
+          outline
+          no-caps
+          dense
+          color="grey-8"
+          icon="o_edit"
+          label="직접입력"
+          class="palette-custom-btn"
+          @click="openCustomAdd"
+        />
       </div>
     </div>
 
@@ -676,15 +694,6 @@ async function deleteShift(entry: ScheduleEntry) {
         </template>
       </div>
     </template>
-
-    <!-- Legend -->
-    <div class="row q-mt-md q-gutter-sm items-center">
-      <span class="text-caption text-grey-6">범례:</span>
-      <q-chip dense size="sm" color="teal"        text-color="white">12시간</q-chip>
-      <q-chip dense size="sm" color="blue"        text-color="white">오전 8h</q-chip>
-      <q-chip dense size="sm" color="deep-orange" text-color="white">오후 8h</q-chip>
-      <q-chip dense size="sm" color="purple"      text-color="white">야간 8h</q-chip>
-    </div>
 
     <!-- ── Add Shift Dialog ────────────────────────────────────────────────── -->
     <q-dialog v-model="showAdd" persistent>

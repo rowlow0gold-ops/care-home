@@ -22,8 +22,6 @@ const router = createRouter({
         { path: "medications",   redirect: { path: "/residents", query: { section: "medications" } } },
         { path: "health-charts", redirect: { path: "/residents", query: { section: "healthcharts" } } },
         { path: "schedule",      name: "schedule",      component: () => import("@/pages/SchedulePage.vue"),     meta: { minRole: 1 } },
-        { path: "leave",         name: "leave",         component: () => import("@/pages/LeavePage.vue"),        meta: { minRole: 1 } },
-        { path: "notifications", name: "notifications", component: () => import("@/pages/NotificationsPage.vue"),meta: { minRole: 3 } },
         { path: "staff",         name: "staff",         component: () => import("@/pages/StaffPage.vue"),        meta: { minRole: 3 } },
         { path: "settings",      name: "settings",      component: () => import("@/pages/SettingsPage.vue"),     meta: { minRole: 3 } },
       ],

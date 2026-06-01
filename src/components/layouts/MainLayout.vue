@@ -31,14 +31,12 @@ const navGroups: NavGroup[] = [
     heading: "직원",
     items: [
       { to: "/staff",    key: "staff",    icon: "o_badge",          label: "직원" },
-      { to: "/schedule", key: "schedule", icon: "o_calendar_month", label: "근무일정" },
-      { to: "/leave",    key: "leave",    icon: "o_event_busy",     label: "휴가 신청" },
     ],
   },
   {
     heading: "서비스",
     items: [
-      { to: "/notifications", key: "notifications", icon: "o_mail",        label: "알림" },
+      { to: "/schedule", key: "schedule", icon: "o_calendar_month", label: "스케쥴러" },
     ],
   },
   {
