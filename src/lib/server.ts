@@ -192,8 +192,11 @@ export const server = {
       `/api/v1/residents/paged?${qs.toString()}`,
     );
   },
-  administerMedication(id: string) {
-    return fetchJson(`/api/v1/medications/${id}/administer`, { method: "POST", body: "{}" });
+  administerMedication(id: string, status: "given" | "missed" | "refused" = "given", notes?: string) {
+    return fetchJson(`/api/v1/medications/${id}/administer`, {
+      method: "POST",
+      body: JSON.stringify({ status, notes: notes ?? null }),
+    });
   },
   medicationAdministrations(residentId: string) {
     return fetchJson<any[]>(`/api/v1/residents/${residentId}/medication-administrations`);
