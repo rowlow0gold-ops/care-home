@@ -70,22 +70,28 @@ async function load() {
   }
 }
 
-// ── 팀 인력 보드 (카드 클릭 → 드래그로 추가/제거/이동) ───────────────────────
-const showBoard = ref(false);
+// 탭: 팀 / 인력 배치 / 어르신 배정
+const tab = ref<"teams" | "workers" | "residents">("teams");
 const boardTeamId = ref<string | null>(null);
 // 드래프트 오버레이: 저장 전까지 서버에 반영하지 않는다. (worker_id → team_id|null)
 const pending = ref(new Map<string, string | null>());
+const historyW = ref<Array<{ id: string; prev: string | null }>>([]); // 한 번에 한 단계씩 되돌리기용
 const dirty = computed(() => pending.value.size > 0);
 const pendingCount = computed(() => pending.value.size);
 const savingBoard = ref(false);
 function effectiveTeam(w: OrgPerson): string | null {
   return pending.value.has(w.id) ? (pending.value.get(w.id) ?? null) : (w.team_id ?? null);
 }
+function setOverlay(map: Map<string, string | null>, id: string, orig: string | null, target: string | null) {
+  if (orig === target) map.delete(id);
+  else map.set(id, target);
+}
 function stageAssign(w: OrgPerson, target: string | null) {
-  const orig = w.team_id ?? null;
-  if (orig === target) pending.value.delete(w.id); // 원래대로 → 변경 없음
-  else pending.value.set(w.id, target);
-  pending.value = new Map(pending.value); // 반응성
+  const prev = effectiveTeam(w);
+  if (prev === target) return;                       // 같은 칼럼 → 변화 없음
+  historyW.value.push({ id: w.id, prev });           // 직전 상태 기록 (1단계 되돌리기)
+  setOverlay(pending.value, w.id, w.team_id ?? null, target);
+  pending.value = new Map(pending.value);
 }
 async function saveBoard() {
   if (!pending.value.size) return;
@@ -94,6 +100,7 @@ async function saveBoard() {
     for (const [id, tid] of pending.value) await server.assignTeam(id, tid);
     const n = pending.value.size;
     pending.value = new Map();
+    historyW.value = [];
     await load();
     $q.notify({ type: "positive", message: `${n}명 배정을 저장했습니다.` });
   } catch (e: any) {
@@ -102,10 +109,13 @@ async function saveBoard() {
     savingBoard.value = false;
   }
 }
+// 한 번 클릭에 마지막 이동 한 건만 되돌린다.
 function revertBoard() {
-  if (!pending.value.size) return;
-  pending.value = new Map();
-  $q.notify({ type: "info", message: "변경을 되돌렸습니다." });
+  const last = historyW.value.pop();
+  if (!last) return;
+  const orig = staff.value.find((s) => s.id === last.id)?.team_id ?? null;
+  setOverlay(pending.value, last.id, orig, last.prev);
+  pending.value = new Map(pending.value);
 }
 
 const unassignedQuery = ref(""); // 미배정 영역 검색
@@ -138,7 +148,7 @@ function exportAssignments() {
 }
 function openBoard(t: Team) {
   boardTeamId.value = t.id;
-  showBoard.value = true;
+  tab.value = "workers";
 }
 
 // pointer 기반 드래그 (WKWebView 에서 HTML5 DnD 불안정 → pointer 사용)
@@ -195,8 +205,8 @@ async function onUp(e: PointerEvent) {
 }
 
 // ── 어르신 배정 보드 (인력 배치와 동일한 드래그 보드) ────────────────────────
-const showResBoard = ref(false);
 const pendingRes = ref(new Map<string, string | null>());
+const historyR = ref<Array<{ id: string; prev: string | null }>>([]);
 const dirtyRes = computed(() => pendingRes.value.size > 0);
 const pendingResCount = computed(() => pendingRes.value.size);
 const savingResBoard = ref(false);
@@ -205,9 +215,10 @@ function effectiveResTeam(r: Resident): string | null {
   return pendingRes.value.has(r.id) ? (pendingRes.value.get(r.id) ?? null) : (r.team_id ?? null);
 }
 function stageAssignRes(r: Resident, target: string | null) {
-  const orig = r.team_id ?? null;
-  if (orig === target) pendingRes.value.delete(r.id);
-  else pendingRes.value.set(r.id, target);
+  const prev = effectiveResTeam(r);
+  if (prev === target) return;
+  historyR.value.push({ id: r.id, prev });
+  setOverlay(pendingRes.value, r.id, r.team_id ?? null, target);
   pendingRes.value = new Map(pendingRes.value);
 }
 const activeResidentsBranch = computed(() =>
@@ -225,11 +236,12 @@ const residentBoardColumns = computed<ResCol[]>(() => {
     ...teams.value.map((t) => ({ id: t.id, name: t.name, type: t.team_type, residents: activeResidentsBranch.value.filter((r) => effectiveResTeam(r) === t.id) })),
   ];
 });
-function openResidentBoard() { showResBoard.value = true; }
 function revertResBoard() {
-  if (!pendingRes.value.size) return;
-  pendingRes.value = new Map();
-  $q.notify({ type: "info", message: "변경을 되돌렸습니다." });
+  const last = historyR.value.pop();
+  if (!last) return;
+  const orig = residents.value.find((s) => s.id === last.id)?.team_id ?? null;
+  setOverlay(pendingRes.value, last.id, orig, last.prev);
+  pendingRes.value = new Map(pendingRes.value);
 }
 async function saveResBoard() {
   if (!pendingRes.value.size) return;
@@ -238,6 +250,7 @@ async function saveResBoard() {
     for (const [id, tid] of pendingRes.value) await server.assignResidentTeam(id, tid);
     const n = pendingRes.value.size;
     pendingRes.value = new Map();
+    historyR.value = [];
     await load();
     $q.notify({ type: "positive", message: `어르신 ${n}명 배정을 저장했습니다.` });
   } catch (e: any) {
@@ -301,17 +314,23 @@ onMounted(load);
 
 <template>
   <q-page class="q-pa-lg">
-    <div class="row items-center q-mb-md q-gutter-sm">
-      <div class="col">
-        <div class="text-h5 text-weight-bold">팀</div>
-        <div class="text-caption text-grey-6">팀 카드를 눌러 인력을 드래그로 배치하고, 각 팀이 담당할 어르신을 배정합니다</div>
-      </div>
+    <div class="row items-center q-mb-sm q-gutter-sm">
+      <div class="text-h5 text-weight-bold col">팀</div>
       <q-btn outline color="primary" icon="o_download" label="엑셀 내보내기" @click="exportAssignments" />
       <q-btn v-if="canEdit" unelevated color="primary" icon="o_add" label="팀 추가" @click="openNew" />
       <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load" />
     </div>
 
-    <!-- 팀 카드 -->
+    <q-tabs v-model="tab" align="left" no-caps inline-label active-color="primary" indicator-color="primary"
+      class="text-grey-7 q-mb-md" style="max-width: 460px">
+      <q-tab name="teams" icon="o_groups" label="팀" />
+      <q-tab name="workers" icon="o_badge" label="인력 배치" />
+      <q-tab name="residents" icon="o_elderly" label="어르신 배정" />
+    </q-tabs>
+
+    <q-tab-panels v-model="tab" animated keep-alive>
+      <!-- 팀 카드 -->
+      <q-tab-panel name="teams" class="q-pa-none">
     <div class="row q-col-gutter-md">
       <div v-for="t in teams" :key="t.id" class="col-12 col-sm-6 col-md-4 col-lg-3">
         <q-card flat bordered class="team-card cursor-pointer" @click="openBoard(t)">
@@ -342,97 +361,86 @@ onMounted(load);
       </div>
       <div v-if="!teams.length && !loading" class="col-12 text-center text-grey-5 q-py-lg">팀이 없습니다. ‘팀 추가’로 만들어 주세요.</div>
     </div>
+      </q-tab-panel>
 
-    <!-- 인력 보드 -->
-    <q-dialog v-model="showBoard" maximized>
-      <q-card>
-        <q-card-section class="row items-center q-gutter-sm">
-          <div class="text-h6">인력 배치 — 드래그로 팀 이동</div>
+      <!-- 인력 배치 -->
+      <q-tab-panel name="workers" class="q-pa-none">
+        <div class="row items-center q-gutter-sm q-mb-sm">
+          <span class="text-subtitle1 text-weight-bold">인력 배치</span>
           <q-badge v-if="dirty" color="orange" :label="`미저장 ${pendingCount}`" />
           <q-space />
-          <q-btn v-if="canEdit" outline dense color="primary" icon="o_elderly" label="어르신 배정" @click="openResidentBoard" />
           <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirty" :loading="savingBoard" @click="saveBoard" />
-          <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!dirty" @click="revertBoard" />
-          <q-btn flat round dense icon="o_close" v-close-popup />
-        </q-card-section>
-        <q-separator />
-        <q-card-section>
-          <div class="text-caption text-grey-6 q-mb-sm">
-            <q-icon name="o_drag_indicator" size="xs" /> 직원 칩을 다른 팀(또는 미배정)으로 드래그하세요. 미배정 → 팀 = 추가, 팀 → 미배정 = 제거.
-          </div>
-          <div class="board">
-            <div v-for="col in boardColumns" :key="colKey(col.id)" class="board-col"
-              :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id), 'col-focus': boardTeamId === col.id }">
-              <div class="board-col-head">
-                <span class="text-weight-bold">{{ col.name }}</span>
-                <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
-                <q-badge color="grey-4" text-color="grey-9" :label="col.workers.length" class="q-ml-xs" />
-                <q-input v-if="col.id === null" v-model="unassignedQuery" dense outlined clearable
-                  placeholder="이름 검색" class="q-mt-xs" @pointerdown.stop>
-                  <template #prepend><q-icon name="search" size="xs" /></template>
-                </q-input>
+          <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!historyW.length" @click="revertBoard" />
+        </div>
+        <div class="text-caption text-grey-6 q-mb-sm">
+          <q-icon name="o_drag_indicator" size="xs" /> 직원 칩을 다른 팀(또는 미배정)으로 드래그하세요. 미배정 → 팀 = 추가, 팀 → 미배정 = 제거.
+        </div>
+        <div class="board">
+          <div v-for="col in boardColumns" :key="colKey(col.id)" class="board-col"
+            :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id), 'col-focus': boardTeamId === col.id }">
+            <div class="board-col-head">
+              <span class="text-weight-bold">{{ col.name }}</span>
+              <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
+              <q-badge color="grey-4" text-color="grey-9" :label="col.workers.length" class="q-ml-xs" />
+              <q-input v-if="col.id === null" v-model="unassignedQuery" dense outlined clearable
+                placeholder="이름 검색" class="q-mt-xs" @pointerdown.stop>
+                <template #prepend><q-icon name="search" size="xs" /></template>
+              </q-input>
+            </div>
+            <div class="board-col-body">
+              <div v-for="w in col.workers" :key="w.id" class="wk-chip" :class="{ disabled: !canEdit }"
+                @pointerdown="startDrag($event, 'worker', w.id, w.full_name)">
+                <q-icon name="o_drag_indicator" size="xs" class="opacity-60 q-mr-xs" />
+                <span class="text-weight-medium">{{ w.full_name }}</span>
+                <span class="wk-pos">{{ w.position_ko }}</span>
               </div>
-              <div class="board-col-body">
-                <div v-for="w in col.workers" :key="w.id" class="wk-chip" :class="{ disabled: !canEdit }"
-                  @pointerdown="startDrag($event, 'worker', w.id, w.full_name)">
-                  <q-icon name="o_drag_indicator" size="xs" class="opacity-60 q-mr-xs" />
-                  <span class="text-weight-medium">{{ w.full_name }}</span>
-                  <span class="wk-pos">{{ w.position_ko }}</span>
-                </div>
-                <div v-if="!col.workers.length" class="text-grey-5 text-caption q-pa-sm text-center">비어 있음</div>
-              </div>
+              <div v-if="!col.workers.length" class="text-grey-5 text-caption q-pa-sm text-center">비어 있음</div>
             </div>
           </div>
-        </q-card-section>
-      </q-card>
-    </q-dialog>
+        </div>
+      </q-tab-panel>
+
+      <!-- 어르신 배정 -->
+      <q-tab-panel name="residents" class="q-pa-none">
+        <div class="row items-center q-gutter-sm q-mb-sm">
+          <span class="text-subtitle1 text-weight-bold">어르신 배정</span>
+          <q-badge v-if="dirtyRes" color="orange" :label="`미저장 ${pendingResCount}`" />
+          <q-space />
+          <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirtyRes" :loading="savingResBoard" @click="saveResBoard" />
+          <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!historyR.length" @click="revertResBoard" />
+        </div>
+        <div class="text-caption text-grey-6 q-mb-sm">
+          <q-icon name="o_drag_indicator" size="xs" /> 어르신 칩을 담당 팀(또는 미배정)으로 드래그하세요.
+        </div>
+        <div class="board">
+          <div v-for="col in residentBoardColumns" :key="colKey(col.id)" class="board-col"
+            :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id) }">
+            <div class="board-col-head">
+              <span class="text-weight-bold">{{ col.name }}</span>
+              <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
+              <q-badge color="grey-4" text-color="grey-9" :label="col.residents.length" class="q-ml-xs" />
+              <q-input v-if="col.id === null" v-model="resQuery" dense outlined clearable
+                placeholder="이름·호실 검색" class="q-mt-xs" @pointerdown.stop>
+                <template #prepend><q-icon name="search" size="xs" /></template>
+              </q-input>
+            </div>
+            <div class="board-col-body">
+              <div v-for="r in col.residents" :key="r.id" class="wk-chip" :class="{ disabled: !canEdit }"
+                @pointerdown="startDrag($event, 'resident', r.id, r.full_name)">
+                <q-icon name="o_drag_indicator" size="xs" class="opacity-60 q-mr-xs" />
+                <span class="text-weight-medium">{{ r.full_name }}</span>
+                <span class="wk-pos">{{ r.room_number ?? "—" }}호</span>
+              </div>
+              <div v-if="!col.residents.length" class="text-grey-5 text-caption q-pa-sm text-center">비어 있음</div>
+            </div>
+          </div>
+        </div>
+      </q-tab-panel>
+    </q-tab-panels>
 
     <!-- drag ghost -->
     <div v-show="dragging" id="team-drag-ghost" class="drag-ghost"
       :style="{ left: ghost.x + 'px', top: ghost.y + 'px', display: ghost.show ? 'block' : 'none' }">{{ dragLabel }}</div>
-
-    <!-- 어르신 배치 보드 (인력 배치와 동일한 드래그 보드) -->
-    <q-dialog v-model="showResBoard" maximized>
-      <q-card>
-        <q-card-section class="row items-center q-gutter-sm">
-          <div class="text-h6">어르신 배치 — 드래그로 팀 배정</div>
-          <q-badge v-if="dirtyRes" color="orange" :label="`미저장 ${pendingResCount}`" />
-          <q-space />
-          <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirtyRes" :loading="savingResBoard" @click="saveResBoard" />
-          <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!dirtyRes" @click="revertResBoard" />
-          <q-btn flat round dense icon="o_close" v-close-popup />
-        </q-card-section>
-        <q-separator />
-        <q-card-section>
-          <div class="text-caption text-grey-6 q-mb-sm">
-            <q-icon name="o_drag_indicator" size="xs" /> 어르신 칩을 담당 팀(또는 미배정)으로 드래그하세요.
-          </div>
-          <div class="board">
-            <div v-for="col in residentBoardColumns" :key="colKey(col.id)" class="board-col"
-              :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id) }">
-              <div class="board-col-head">
-                <span class="text-weight-bold">{{ col.name }}</span>
-                <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
-                <q-badge color="grey-4" text-color="grey-9" :label="col.residents.length" class="q-ml-xs" />
-                <q-input v-if="col.id === null" v-model="resQuery" dense outlined clearable
-                  placeholder="이름·호실 검색" class="q-mt-xs" @pointerdown.stop>
-                  <template #prepend><q-icon name="search" size="xs" /></template>
-                </q-input>
-              </div>
-              <div class="board-col-body">
-                <div v-for="r in col.residents" :key="r.id" class="wk-chip" :class="{ disabled: !canEdit }"
-                  @pointerdown="startDrag($event, 'resident', r.id, r.full_name)">
-                  <q-icon name="o_drag_indicator" size="xs" class="opacity-60 q-mr-xs" />
-                  <span class="text-weight-medium">{{ r.full_name }}</span>
-                  <span class="wk-pos">{{ r.room_number ?? "—" }}호</span>
-                </div>
-                <div v-if="!col.residents.length" class="text-grey-5 text-caption q-pa-sm text-center">비어 있음</div>
-              </div>
-            </div>
-          </div>
-        </q-card-section>
-      </q-card>
-    </q-dialog>
 
     <!-- 팀 추가/수정 -->
     <q-dialog v-model="showTeamDialog">
