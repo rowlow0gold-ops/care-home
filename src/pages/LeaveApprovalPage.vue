@@ -106,6 +106,37 @@ function decide(r: Row, status: "approved" | "rejected") {
   }
 }
 
+const approvingAll = ref(false);
+function approveAll() {
+  $q.dialog({
+    title: "전체 승인",
+    message: "대기 중인 휴가 신청을 모두 승인할까요?",
+    cancel: { label: "취소", flat: true },
+    ok: { label: "전체 승인", color: "positive", unelevated: true },
+    persistent: true,
+  }).onOk(async () => {
+    approvingAll.value = true;
+    try {
+      const ids: string[] = [];
+      let p = 1, totalP = 1;
+      do {
+        const res = await server.leaveRequestsPaged({ status: "pending", page: p, page_size: 100 });
+        res.items.forEach((r) => ids.push(r.id));
+        totalP = Math.max(1, Math.ceil(res.total / 100));
+        p++;
+      } while (p <= totalP);
+      if (!ids.length) { $q.notify({ type: "info", message: "대기 중인 신청이 없습니다." }); return; }
+      for (const id of ids) await server.decideLeave(id, "approved");
+      $q.notify({ type: "positive", message: `${ids.length}건을 승인했습니다.` });
+      await load();
+    } catch (e: any) {
+      $q.notify({ type: "negative", message: `전체 승인 실패: ${e?.message ?? e}` });
+    } finally {
+      approvingAll.value = false;
+    }
+  });
+}
+
 const columns = [
   { name: "user_name", label: "직원", field: "user_name", align: "left" as const },
   { name: "leave_type", label: "유형", field: "leave_type", align: "left" as const },
@@ -135,6 +166,7 @@ onMounted(load);
       <div class="col">
         <div class="text-caption text-grey-6">태블릿에서 신청된 휴무를 승인/반려합니다</div>
       </div>
+      <q-btn v-if="canDecide" unelevated color="positive" icon="o_done_all" label="전체 승인" :loading="approvingAll" @click="approveAll" />
       <div class="col-auto" style="min-width: 130px">
         <q-select v-model="statusFilter" :options="statusOptions" outlined dense emit-value map-options />
       </div>
