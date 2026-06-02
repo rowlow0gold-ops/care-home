@@ -198,7 +198,10 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
             </q-item-section>
             <q-item-section side top>
               <q-item-label caption>{{ fmtTime(c.last_message_at) }}</q-item-label>
-              <q-badge v-if="c.unread_count" color="red" rounded :label="c.unread_count" class="q-mt-xs" />
+              <div class="row items-center q-gutter-xs q-mt-xs">
+                <q-badge v-if="c.unread_count" color="red" rounded :label="c.unread_count" />
+                <q-btn flat round dense size="sm" icon="o_delete" color="grey-6" @click.stop="confirmDelete(c)" />
+              </div>
             </q-item-section>
           </q-item>
           <div v-if="!convos.length && !loadingList" class="text-center text-grey-5 q-py-xl">대화가 없습니다</div>
