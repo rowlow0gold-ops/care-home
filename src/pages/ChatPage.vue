@@ -7,6 +7,8 @@ import {
 } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
+const props = defineProps<{ initialConvId?: string | null; initialConvName?: string | null }>();
+
 const $q = useQuasar();
 const route = useRoute();
 const session = useServerSessionStore();
@@ -166,8 +168,8 @@ async function doInvite() {
 onMounted(async () => {
   await loadList();
   // 휴가 승인 등에서 ?conv=<id> 로 넘어오면 해당 대화를 자동으로 연다.
-  const wanted = route.query.conv as string | undefined;
-  const wantedName = route.query.name as string | undefined;
+  const wanted = props.initialConvId ?? (route.query.conv as string | undefined);
+  const wantedName = props.initialConvName ?? (route.query.name as string | undefined);
   if (wanted) {
     if (wantedName) localNames.value[wanted] = wantedName;
     const c = convos.value.find((x) => x.id === wanted);
@@ -281,7 +283,7 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
 </template>
 
 <style scoped>
-.chat-page { display: flex; height: calc(100vh - 50px); padding: 0; }
+.chat-page { display: flex; height: 72vh; padding: 0; }
 .chat-sidebar { width: 340px; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column; }
 .chat-list { flex: 1; }
 .invite-box { background: #fff8e1; }
