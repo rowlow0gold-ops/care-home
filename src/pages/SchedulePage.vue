@@ -672,6 +672,25 @@ async function generateRotation() {
     const targetTeams = selectedTeam.value ? teams.value.filter((t) => t.id === selectedTeam.value) : teams.value;
     const eldersOf = (tid: string) => activeResidents.value.filter((r) => r.team_id === tid).length;
 
+    // 승인된 휴가는 자동 배정에서 제외 — 이번 주에 걸친 승인 휴가를 모은다.
+    const weekSet = new Set(weekDates.value.map(localDateStr));
+    const onLeave = new Set<string>(); // `${user_id}-${YYYY-MM-DD}`
+    try {
+      let p = 1, fetched = 0, leaveTotal = Infinity;
+      while (fetched < leaveTotal && p <= 10) {
+        const res = await server.leaveRequestsPaged({ status: "approved", page: p, page_size: 100 });
+        leaveTotal = res.total;
+        for (const lr of res.items) {
+          for (const ds of weekSet) {
+            if (ds >= lr.start_date && ds <= lr.end_date) onLeave.add(`${lr.user_id}-${ds}`);
+          }
+        }
+        fetched += res.items.length;
+        if (!res.items.length) break;
+        p++;
+      }
+    } catch { /* 휴가 조회 실패 시 제외 없이 진행 */ }
+
     const existing = new Set(entries.value.map((e) => `${e.staff_id}-${e.shift_date}`));
     const fresh: ScheduleEntry[] = [];
     const noWorkers: string[] = [];
@@ -695,6 +714,7 @@ async function generateRotation() {
           while (filled < required && attempts < W.length) {
             const w = W[ptr % W.length]; ptr++; attempts++;
             if (usedToday.has(w.id)) continue;
+            if (onLeave.has(`${w.id}-${ds}`)) { usedToday.add(w.id); continue; } // 승인 휴가 → 제외
             if (existing.has(`${w.id}-${ds}`)) { usedToday.add(w.id); continue; }
             usedToday.add(w.id);
             existing.add(`${w.id}-${ds}`);
