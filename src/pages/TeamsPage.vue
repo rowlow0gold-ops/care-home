@@ -14,7 +14,7 @@ onBeforeRouteLeave((_to, _from, next) => {
   if (!dirty.value && !dirtyRes.value) { next(); return; }
   $q.dialog({
     title: "저장하지 않은 변경",
-    message: "저장하지 않은 배정 변경이 있습니다. 나가면 사라집니다. 계속할까요?",
+    message: "저장하지 않은 작업사항이 있습니다. 나가면 사라집니다. 계속할까요?",
     cancel: { label: "취소", flat: true },
     ok: { label: "나가기", color: "negative", unelevated: true },
     persistent: true,
