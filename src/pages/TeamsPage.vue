@@ -92,6 +92,58 @@ async function reassign(person: OrgPerson, teamId: string | null) {
   }
 }
 
+// ── 어르신 → 조 배정 (호실 기준 일괄) ────────────────────────────────────────
+const showAssignResidents = ref(false);
+const assignTeamId = ref<string | null>(null);
+const roomFrom = ref("");
+const roomTo = ref("");
+const unassignedOnly = ref(false);
+const assigningResidents = ref(false);
+
+const assignTargetTeam = computed(() => teams.value.find((t) => t.id === assignTeamId.value) ?? null);
+const matchedResidents = computed<Resident[]>(() => {
+  const team = assignTargetTeam.value;
+  if (!team) return [];
+  const from = roomFrom.value.trim() ? Number(roomFrom.value) : null;
+  const to = roomTo.value.trim() ? Number(roomTo.value) : null;
+  return residents.value.filter((r) => {
+    if (r.status !== "active") return false;
+    if (r.branch_id !== team.branch_id) return false; // 같은 센터의 어르신만
+    if (unassignedOnly.value && r.team_id) return false;
+    if (from !== null || to !== null) {
+      const n = Number(r.room_number);
+      if (Number.isNaN(n)) return false;
+      if (from !== null && n < from) return false;
+      if (to !== null && n > to) return false;
+    }
+    return true;
+  });
+});
+
+function openAssignResidents() {
+  assignTeamId.value = teams.value[0]?.id ?? null;
+  roomFrom.value = "";
+  roomTo.value = "";
+  unassignedOnly.value = false;
+  showAssignResidents.value = true;
+}
+async function assignResidents() {
+  const team = assignTargetTeam.value;
+  const list = matchedResidents.value;
+  if (!team || !list.length) return;
+  assigningResidents.value = true;
+  try {
+    for (const r of list) await server.assignResidentTeam(r.id, team.id);
+    $q.notify({ type: "positive", message: `${list.length}명을 ${team.name}에 배정했습니다.` });
+    showAssignResidents.value = false;
+    await load();
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `배정 실패: ${e?.message ?? e}` });
+  } finally {
+    assigningResidents.value = false;
+  }
+}
+
 // ── 팀 추가 / 수정 ──────────────────────────────────────────────────────────
 const showTeamDialog = ref(false);
 const editingId = ref<string | null>(null);
@@ -159,6 +211,7 @@ onMounted(load);
         <div class="text-caption text-grey-6">돌봄 인력을 조로 나누고, 각 조가 담당할 어르신을 배정합니다</div>
       </div>
       <q-toggle v-model="onlyCare" label="돌봄 인력만" dense />
+      <q-btn v-if="canEdit" outline color="primary" icon="o_elderly" label="어르신 배정" @click="openAssignResidents" />
       <q-btn v-if="canEdit" unelevated color="primary" icon="o_add" label="조 추가" @click="openNew" />
       <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load" />
     </div>
@@ -228,6 +281,39 @@ onMounted(load);
         </div>
       </template>
     </q-table>
+
+    <!-- 어르신 → 조 배정 (호실 기준) -->
+    <q-dialog v-model="showAssignResidents">
+      <q-card style="min-width: 480px">
+        <q-card-section class="text-h6">어르신 → 조 배정</q-card-section>
+        <q-card-section class="q-gutter-md">
+          <q-select v-model="assignTeamId" emit-value map-options outlined dense label="대상 조"
+            :options="teams.map((t) => ({ label: `${t.name} · ${teamTypeLabel[t.team_type]}`, value: t.id }))" />
+          <div>
+            <div class="text-caption text-grey-7 q-mb-xs">호실 범위 (비우면 전체)</div>
+            <div class="row q-gutter-sm">
+              <q-input v-model="roomFrom" label="시작" type="number" outlined dense class="col" />
+              <q-input v-model="roomTo" label="끝" type="number" outlined dense class="col" />
+            </div>
+          </div>
+          <q-toggle v-model="unassignedOnly" label="미배정 어르신만" dense />
+          <q-banner dense class="bg-blue-1 text-blue-9 rounded-borders">
+            <q-icon name="o_groups" class="q-mr-xs" />{{ matchedResidents.length }}명이 배정됩니다.
+          </q-banner>
+          <q-list v-if="matchedResidents.length" bordered dense class="rounded-borders" style="max-height: 200px; overflow:auto">
+            <q-item v-for="r in matchedResidents.slice(0, 100)" :key="r.id">
+              <q-item-section>{{ r.full_name }}</q-item-section>
+              <q-item-section side class="text-grey-7">{{ r.room_number ?? "—" }}호 · {{ r.team_name ?? "미배정" }}</q-item-section>
+            </q-item>
+          </q-list>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn unelevated color="primary" :label="`${matchedResidents.length}명 배정`"
+            :disable="!matchedResidents.length" :loading="assigningResidents" @click="assignResidents" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <q-dialog v-model="showTeamDialog">
       <q-card style="min-width: 340px">

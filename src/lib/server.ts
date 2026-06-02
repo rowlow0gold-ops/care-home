@@ -408,6 +408,12 @@ export const server = {
       body: JSON.stringify({ team_id: teamId }),
     });
   },
+  assignResidentTeam(residentId: string, teamId: string | null) {
+    return fetchJson(`/api/v1/residents/${residentId}/team`, {
+      method: "PATCH",
+      body: JSON.stringify({ team_id: teamId }),
+    });
+  },
   createTeam(payload: {
     name: string;
     color_hue?: number;
