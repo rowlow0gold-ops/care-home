@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useQuasar } from "quasar";
-import { server, type OrgPerson } from "@/lib/server";
+import { server, type OrgPerson, type Team } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
@@ -125,15 +125,26 @@ const submitting = ref(false);
 const emptyAdd = () => ({
   full_name: "", email: "", password: "", role: "caregiver",
   position: "caregiver", employment_type: "regular", phone: "",
+  team_id: null as string | null,
 });
 const addForm = ref(emptyAdd());
+
+// 배정할 수 있는 팀 (비워둬도 됨 → 미배정)
+const teams = ref<Team[]>([]);
+const teamSelectOptions = computed(() => [
+  { label: "미배정", value: null as string | null },
+  ...teams.value.map((t) => ({ label: t.name, value: t.id })),
+]);
+async function loadTeams() {
+  try { teams.value = await server.teams(); } catch { teams.value = []; }
+}
 
 async function submitAdd() {
   const valid = await addFormRef.value?.validate();
   if (!valid) return;
   submitting.value = true;
   try {
-    await server.createStaff({
+    const created = await server.createStaff({
       full_name: addForm.value.full_name.trim(),
       email: addForm.value.email.trim(),
       password: addForm.value.password,
@@ -142,6 +153,10 @@ async function submitAdd() {
       employment_type: addForm.value.employment_type,
       phone: addForm.value.phone.trim() || null,
     });
+    // 팀을 골랐으면 생성 직후 배정 (비워두면 미배정).
+    if (addForm.value.team_id && created?.id) {
+      try { await server.assignTeam(created.id, addForm.value.team_id); } catch { /* 배정 실패해도 직원은 생성됨 */ }
+    }
     $q.notify({ type: "positive", message: "직원이 추가되었습니다." });
     showAddDialog.value = false;
     addForm.value = emptyAdd();
@@ -209,7 +224,7 @@ function confirmDeactivate(p: OrgPerson) {
   });
 }
 
-onMounted(load);
+onMounted(() => { load(); loadTeams(); });
 </script>
 
 <template>
@@ -307,7 +322,11 @@ onMounted(load);
               <q-select class="col" v-model="addForm.position" :options="POSITION_OPTIONS" label="직책" outlined dense emit-value map-options />
               <q-select class="col" v-model="addForm.employment_type" :options="EMPLOYMENT_OPTIONS" label="고용형태" outlined dense emit-value map-options />
             </div>
-            <q-input v-model="addForm.phone" label="연락처" outlined dense />
+            <div class="row q-gutter-sm">
+              <q-input class="col" v-model="addForm.phone" label="연락처" outlined dense />
+              <q-select class="col" v-model="addForm.team_id" :options="teamSelectOptions" label="담당 팀 (선택)" outlined dense emit-value map-options
+                hint="비워두면 미배정" />
+            </div>
           </q-form>
         </q-card-section>
         <q-card-actions align="right" class="q-px-md q-pb-md">
