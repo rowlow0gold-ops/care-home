@@ -415,12 +415,13 @@ export const server = {
     branch_id?: string | null;
     shift_start_hm?: string;
     shift_end_hm?: string;
+    team_type?: "residential" | "day" | "visit";
   }) {
     return fetchJson<Team>("/api/v1/teams", { method: "POST", body: JSON.stringify(payload) });
   },
   updateTeam(
     id: string,
-    payload: Partial<{ name: string; color_hue: number; sort_order: number; shift_start_hm: string; shift_end_hm: string }>,
+    payload: Partial<{ name: string; color_hue: number; sort_order: number; shift_start_hm: string; shift_end_hm: string; team_type: "residential" | "day" | "visit" }>,
   ) {
     return fetchJson<Team>(`/api/v1/teams/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
   },
@@ -650,6 +651,7 @@ export interface Team {
   name: string;
   color_hue: number;
   sort_order: number;
+  team_type: "residential" | "day" | "visit";
   shift_start_hm: string;
   shift_end_hm: string;
   member_count: number;

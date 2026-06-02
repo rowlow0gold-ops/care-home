@@ -26,6 +26,21 @@ const teamOptions = computed(() => [
   ...teams.value.map((t) => ({ label: t.name, value: t.id })),
 ]);
 
+// 팀 유형: 요양(24h) / 주간 / 방문
+const TEAM_TYPE_OPTIONS = [
+  { label: "요양 (24시간)", value: "residential" as const },
+  { label: "주간", value: "day" as const },
+  { label: "방문", value: "visit" as const },
+];
+const teamTypeLabel: Record<string, string> = { residential: "요양", day: "주간", visit: "방문" };
+const teamTypeColor: Record<string, string> = { residential: "teal", day: "indigo", visit: "deep-orange" };
+// 유형별 기본 근무 창
+const TYPE_DEFAULT_SHIFT: Record<string, { start: string; end: string }> = {
+  residential: { start: "07:00", end: "19:00" },
+  day: { start: "09:00", end: "18:00" },
+  visit: { start: "09:00", end: "13:00" },
+};
+
 function workersOf(teamId: string) {
   return staff.value.filter((s) => !s.is_inactive && careRoles.has(s.role) && s.team_id === teamId).length;
 }
@@ -80,18 +95,23 @@ async function reassign(person: OrgPerson, teamId: string | null) {
 // ── 팀 추가 / 수정 ──────────────────────────────────────────────────────────
 const showTeamDialog = ref(false);
 const editingId = ref<string | null>(null);
-const form = ref({ name: "", shift_start_hm: "06:00", shift_end_hm: "18:00", color_hue: 210 });
+const form = ref({ name: "", team_type: "residential" as "residential" | "day" | "visit", shift_start_hm: "07:00", shift_end_hm: "19:00", color_hue: 210 });
 const HUE_PRESETS = [210, 260, 150, 30, 340, 110];
 
 function openNew() {
   editingId.value = null;
-  form.value = { name: "", shift_start_hm: "06:00", shift_end_hm: "18:00", color_hue: 210 };
+  form.value = { name: "", team_type: "residential", shift_start_hm: "07:00", shift_end_hm: "19:00", color_hue: 210 };
   showTeamDialog.value = true;
 }
 function openEdit(t: Team) {
   editingId.value = t.id;
-  form.value = { name: t.name, shift_start_hm: t.shift_start_hm, shift_end_hm: t.shift_end_hm, color_hue: t.color_hue };
+  form.value = { name: t.name, team_type: t.team_type, shift_start_hm: t.shift_start_hm, shift_end_hm: t.shift_end_hm, color_hue: t.color_hue };
   showTeamDialog.value = true;
+}
+// 유형을 바꾸면 근무 창을 그 유형의 기본값으로 맞춘다.
+function onTypeChange(v: "residential" | "day" | "visit") {
+  const d = TYPE_DEFAULT_SHIFT[v];
+  if (d) { form.value.shift_start_hm = d.start; form.value.shift_end_hm = d.end; }
 }
 async function saveTeam() {
   const f = form.value;
@@ -156,7 +176,10 @@ onMounted(load);
                 <q-btn flat round dense size="sm" icon="o_delete" color="grey-6" @click="removeTeam(t)" />
               </template>
             </div>
-            <div class="text-caption text-grey-6">근무 {{ t.shift_start_hm }} ~ {{ t.shift_end_hm }}</div>
+            <div class="row items-center q-gutter-xs q-mt-xs">
+              <q-badge :color="teamTypeColor[t.team_type] ?? 'grey'" :label="teamTypeLabel[t.team_type] ?? t.team_type" />
+              <span class="text-caption text-grey-6">근무 {{ t.shift_start_hm }} ~ {{ t.shift_end_hm }}</span>
+            </div>
           </q-card-section>
           <q-card-section class="row q-pt-none text-center">
             <div class="col"><div class="text-h6">{{ workersOf(t.id) }}</div><div class="text-caption text-grey-6">인력</div></div>
@@ -211,6 +234,8 @@ onMounted(load);
         <q-card-section class="text-h6">{{ editingId ? "조 수정" : "조 추가" }}</q-card-section>
         <q-card-section class="q-gutter-md">
           <q-input v-model="form.name" label="조 이름" outlined dense autofocus hint="예: 요양1팀 · 주간1팀 · 방문1팀" />
+          <q-select v-model="form.team_type" :options="TEAM_TYPE_OPTIONS" label="유형" outlined dense emit-value map-options
+            @update:model-value="onTypeChange" hint="요양=24시간 · 주간=주간만 · 방문=가변" />
           <div class="row q-gutter-sm">
             <q-input v-model="form.shift_start_hm" label="근무 시작" outlined dense class="col" hint="HH:MM" mask="##:##" />
             <q-input v-model="form.shift_end_hm" label="근무 종료" outlined dense class="col" hint="HH:MM" mask="##:##" />
