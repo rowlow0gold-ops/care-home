@@ -66,8 +66,8 @@ export const useServerSessionStore = defineStore("server-session", () => {
   const POSITION_PAGES: Record<string, readonly string[] | typeof ALL> = {
     branch_manager: ALL,                                                   // 시설장 — everything
     it: ALL,                                                               // 본사 IT 지원 — everything
-    office_manager: ["residents", "schedule", "leave", "meals", "reports", "staff", "settings"], // 행정
-    receptionist:   ["residents", "schedule", "leave", "meals", "reports", "staff", "settings"], // 접수
+    office_manager: ["residents", "schedule", "teams", "leave", "meals", "reports", "staff", "chat", "settings"], // 행정
+    receptionist:   ["residents", "schedule", "teams", "leave", "meals", "reports", "staff", "chat", "settings"], // 접수
   };
 
   /** Pages this user may open: "*" = all, or an explicit list. */

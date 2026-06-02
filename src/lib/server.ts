@@ -28,6 +28,8 @@ interface MeUser {
   branch_name: string | null;
   tenant_name: string | null;
   position: string | null;
+  team_id: string | null;
+  team_name: string | null;
 }
 
 let backing: Store | null = null;
@@ -403,6 +405,25 @@ export const server = {
       body: JSON.stringify({ team_id: teamId }),
     });
   },
+  createTeam(payload: {
+    name: string;
+    color_hue?: number;
+    sort_order?: number;
+    branch_id?: string | null;
+    shift_start_hm?: string;
+    shift_end_hm?: string;
+  }) {
+    return fetchJson<Team>("/api/v1/teams", { method: "POST", body: JSON.stringify(payload) });
+  },
+  updateTeam(
+    id: string,
+    payload: Partial<{ name: string; color_hue: number; sort_order: number; shift_start_hm: string; shift_end_hm: string }>,
+  ) {
+    return fetchJson<Team>(`/api/v1/teams/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+  deleteTeam(id: string) {
+    return fetchJson(`/api/v1/teams/${id}`, { method: "DELETE" });
+  },
   createRoster(payload: UpsertRoster) {
     return fetchJson<RosterEntry>("/api/v1/roster", {
       method: "POST",
@@ -417,6 +438,44 @@ export const server = {
   },
   deleteRoster(id: string) {
     return fetchJson(`/api/v1/roster/${id}`, { method: "DELETE" });
+  },
+
+  // === chat (요양보호사 ↔ 행정 메시지) ===
+  conversations() {
+    return fetchJson<ConversationSummary[]>("/api/v1/chat/conversations");
+  },
+  createConversation(payload: { title?: string | null; invitee_id?: string | null }) {
+    return fetchJson<ConversationSummary>("/api/v1/chat/conversations", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  inviteToConversation(convId: string, inviteeId: string) {
+    return fetchJson<{ id: string; ok: boolean }>(`/api/v1/chat/conversations/${convId}/invite`, {
+      method: "POST",
+      body: JSON.stringify({ invitee_id: inviteeId }),
+    });
+  },
+  messages(convId: string, since?: string, limit = 50) {
+    const qs = new URLSearchParams();
+    if (since) qs.set("since", since);
+    qs.set("limit", String(limit));
+    return fetchJson<ChatMessage[]>(`/api/v1/chat/conversations/${convId}/messages?${qs.toString()}`);
+  },
+  postMessage(convId: string, body: string) {
+    return fetchJson<ChatMessage>(`/api/v1/chat/conversations/${convId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    });
+  },
+  myInvites() {
+    return fetchJson<ChatInvite[]>("/api/v1/chat/invites");
+  },
+  acceptInvite(inviteId: string) {
+    return fetchJson(`/api/v1/chat/invites/${inviteId}/accept`, { method: "POST" });
+  },
+  rejectInvite(inviteId: string) {
+    return fetchJson(`/api/v1/chat/invites/${inviteId}/reject`, { method: "POST" });
   },
 
   // === notifications feed — flagged care logs (in-app alerts) ===
@@ -638,12 +697,16 @@ export interface Resident {
   room_number: string | null;
   admitted_on: string;
   status: "active" | "discharged" | "deceased";
+  team_id: string | null;
+  team_name: string | null;
 }
 
 export interface OrgPerson {
   id: string;
   branch_id: string | null;
   branch_name: string | null;
+  team_id: string | null;
+  team_name: string | null;
   full_name: string;
   email: string;
   phone: string | null;
@@ -689,6 +752,36 @@ export interface UpsertMealPlan {
   menu: string;
   calories?: number | null;
   notes?: string | null;
+}
+
+export interface ConversationSummary {
+  id: string;
+  branch_id: string | null;
+  title: string | null;
+  created_by: string;
+  created_at: string;
+  last_message_at: string;
+  other_names: string | null;
+  last_body: string | null;
+  unread_count: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  sender_name: string;
+  body: string;
+  sent_at: string;
+}
+
+export interface ChatInvite {
+  id: string;
+  conversation_id: string;
+  conversation_title: string | null;
+  invited_by: string;
+  invited_by_name: string;
+  requested_at: string;
 }
 
 export type { MeUser };

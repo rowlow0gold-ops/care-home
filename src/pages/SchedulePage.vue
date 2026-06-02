@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { Store } from "@tauri-apps/plugin-store";
 import { useQuasar } from "quasar";
-import { server, type Team } from "@/lib/server";
+import { server, type Team, type OrgPerson, type Resident } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
@@ -335,7 +335,7 @@ watch(selectedTeam, async () => {
   else await loadStaffList();
   await loadSchedule();
 });
-onMounted(async () => { await loadPresets(); await loadTeams(); await loadStaffList(); await loadSchedule(); });
+onMounted(async () => { await loadPresets(); await loadTeams(); await loadStaffList(); await loadResidentCounts(); await loadSchedule(); });
 
 // ── Shift presets (근무 유형) ─────────────────────────────────────────────────
 interface Preset { label: string; start: string; end: string; hours: number }
@@ -629,6 +629,135 @@ function deleteShift(entry: ScheduleEntry) {
   }
   rebuild();
 }
+
+// ── 자동 순환 생성 (auto-rotation) ──────────────────────────────────────────
+// Fills the visible week's empty cells with each 조's shift window, giving every
+// worker one staggered rest day per week. Goes into the draft overlay (저장 전까지
+// 미반영). Only fills empty (worker, date) cells, so it never duplicates.
+const generating = ref(false);
+async function generateRotation() {
+  if (!canCreate.value) return;
+  if (viewMode.value !== "week") {
+    $q.notify({ type: "info", message: "주간 보기에서 자동 생성됩니다." });
+    return;
+  }
+  generating.value = true;
+  try {
+    const org = await server.orgPaged({ page: 1, page_size: 500 });
+    const myBranch = session.me?.branch_id;
+    const workers: OrgPerson[] = org.items.filter(
+      (u) => !u.is_inactive && ["caregiver", "nurse"].includes(u.role) && (!myBranch || u.branch_id === myBranch),
+    );
+    const targetTeams = selectedTeam.value
+      ? teams.value.filter((t) => t.id === selectedTeam.value)
+      : teams.value;
+    if (!targetTeams.length) {
+      $q.notify({ type: "warning", message: "먼저 ‘조 관리’에서 조를 만들고 인력을 배정하세요." });
+      return;
+    }
+    const existing = new Set(entries.value.map((e) => `${e.staff_id}-${e.shift_date}`));
+    const fresh: ScheduleEntry[] = [];
+    for (const team of targetTeams) {
+      const tw = workers.filter((w) => w.team_id === team.id);
+      const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
+      tw.forEach((w, i) => {
+        weekDates.value.forEach((d, dayIdx) => {
+          // staggered rest day — worker i rests on weekday (i % 7).
+          if (tw.length > 1 && i % 7 === dayIdx) return;
+          const ds = localDateStr(d);
+          const key = `${w.id}-${ds}`;
+          if (existing.has(key)) return;
+          existing.add(key);
+          fresh.push({
+            id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
+            shift_start: team.shift_start_hm, shift_end: team.shift_end_hm,
+            shift_hours: hrs, notes: `${team.name} 자동`,
+          });
+        });
+      });
+    }
+    if (!fresh.length) {
+      $q.notify({ type: "info", message: "생성할 빈 칸이 없습니다. (조 배정·주간을 확인하세요)" });
+      return;
+    }
+    pendingCreates.value = [...pendingCreates.value, ...fresh];
+    rebuild();
+    $q.notify({ type: "positive", message: `${fresh.length}건을 생성했습니다. 확인 후 저장하세요.` });
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `자동 생성 실패: ${e?.message ?? e}` });
+  } finally {
+    generating.value = false;
+  }
+}
+
+// ── 인력 알림 (24h 공백 + 1:10 비율) ─────────────────────────────────────────
+const activeResidents = ref<Resident[]>([]);
+async function loadResidentCounts() {
+  try {
+    const r = await server.residentsPaged({ page: 1, page_size: 1000, status: "active" });
+    activeResidents.value = r.items;
+  } catch { /* alerts are best-effort */ }
+}
+const residentsForRatio = computed(() =>
+  selectedTeam.value
+    ? activeResidents.value.filter((r) => r.team_id === selectedTeam.value).length
+    : activeResidents.value.length,
+);
+function coveredHours(dateStr: string): Set<number> {
+  const set = new Set<number>();
+  for (const e of entries.value) {
+    if (e.shift_date !== dateStr) continue;
+    const sh = parseInt(e.shift_start.slice(0, 2), 10);
+    let eh = parseInt(e.shift_end.slice(0, 2), 10);
+    if (e.shift_end === "00:00") eh = 24;
+    if (eh <= sh) eh += 24; // wraps past midnight
+    for (let h = sh; h < eh; h++) set.add(h % 24);
+  }
+  return set;
+}
+function gapRanges(dateStr: string): string[] {
+  const cov = coveredHours(dateStr);
+  const gaps: number[] = [];
+  for (let h = 0; h < 24; h++) if (!cov.has(h)) gaps.push(h);
+  const ranges: string[] = [];
+  let i = 0;
+  while (i < gaps.length) {
+    let j = i;
+    while (j + 1 < gaps.length && gaps[j + 1] === gaps[j] + 1) j++;
+    const s = String(gaps[i]).padStart(2, "0");
+    const e = String((gaps[j] + 1) % 24).padStart(2, "0");
+    ranges.push(`${s}:00–${e}:00`);
+    i = j + 1;
+  }
+  return ranges;
+}
+interface Alert { date: string; kind: "gap" | "ratio"; text: string }
+const staffingAlerts = computed<Alert[]>(() => {
+  const out: Alert[] = [];
+  const dates =
+    viewMode.value === "week"
+      ? weekDates.value.map(localDateStr)
+      : Array.from(new Set(monthGrid.value.flat().map(localDateStr))).filter(
+          (d) => d.slice(0, 7) === monthStartStr.value.slice(0, 7),
+        );
+  for (const ds of dates) {
+    const dayEs = entries.value.filter((e) => e.shift_date === ds);
+    if (!dayEs.length) continue; // only flag days that are actually being scheduled
+    const ranges = gapRanges(ds);
+    if (ranges.length) out.push({ date: ds, kind: "gap", text: `24시간 공백 ${ranges.join(", ")}` });
+    const staffOn = new Set(dayEs.map((e) => e.staff_id)).size;
+    const res = residentsForRatio.value;
+    if (res && staffOn > 0 && res / staffOn > 10) {
+      out.push({ date: ds, kind: "ratio", text: `어르신 ${res}명 : 근무 ${staffOn}명 (1:${(res / staffOn).toFixed(1)} — 권장 1:10)` });
+    }
+  }
+  return out;
+});
+function alertDateLabel(ds: string): string {
+  const d = new Date(ds + "T00:00:00");
+  return `${d.getMonth() + 1}/${d.getDate()}(${DAY_LABELS[d.getDay()]})`;
+}
+const showAlerts = ref(true);
 </script>
 
 <template>
@@ -647,6 +776,9 @@ function deleteShift(entry: ScheduleEntry) {
 
       <!-- Draft controls -->
       <div v-if="canCreate" class="col-auto q-gutter-xs">
+        <q-btn v-if="viewMode === 'week'" outline color="primary" icon="o_auto_awesome" label="자동 생성" dense :loading="generating" @click="generateRotation">
+          <q-tooltip>선택한 조(또는 전체)의 근무를 이번 주에 순환 배정합니다. 휴무는 하루씩 교대됩니다.</q-tooltip>
+        </q-btn>
         <q-btn color="primary" icon="o_save" label="저장" unelevated dense :disable="!dirty" :loading="saving" @click="saveDraft" />
         <q-btn outline color="grey-8" icon="o_undo" label="되돌리기" dense :disable="!dirty" @click="rollbackDraft" />
         <q-btn flat color="negative" icon="o_refresh" label="클리어" dense @click="clearDraft" />
@@ -702,6 +834,30 @@ function deleteShift(entry: ScheduleEntry) {
         />
       </div>
     </div>
+
+    <!-- 인력 알림 -->
+    <q-card v-if="staffingAlerts.length" flat bordered class="alert-card q-mb-md">
+      <q-card-section class="row items-center q-py-sm">
+        <q-icon name="o_warning" color="negative" class="q-mr-sm" />
+        <span class="text-weight-medium text-negative col">인력 알림 {{ staffingAlerts.length }}건</span>
+        <q-btn flat round dense :icon="showAlerts ? 'o_expand_less' : 'o_expand_more'" @click="showAlerts = !showAlerts" />
+      </q-card-section>
+      <q-slide-transition>
+        <div v-show="showAlerts">
+          <q-separator />
+          <q-list dense>
+            <q-item v-for="(a, idx) in staffingAlerts" :key="idx">
+              <q-item-section avatar style="min-width:36px">
+                <q-icon :name="a.kind === 'gap' ? 'o_schedule' : 'o_groups'" :color="a.kind === 'gap' ? 'orange' : 'negative'" size="20px" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label><b>{{ alertDateLabel(a.date) }}</b> · {{ a.text }}</q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </div>
+      </q-slide-transition>
+    </q-card>
 
     <!-- Navigator -->
     <div class="row items-center q-mb-md q-gutter-sm">
@@ -971,6 +1127,7 @@ function deleteShift(entry: ScheduleEntry) {
 </template>
 
 <style scoped>
+.alert-card { background: #fff5f5; border-color: #ffd1d1; }
 /* ── Week view ──────────────────────────────────────────────────────────────── */
 .schedule-wrap { overflow-x: auto; }
 .schedule-table { width: 100%; border-collapse: collapse; min-width: 820px; }
