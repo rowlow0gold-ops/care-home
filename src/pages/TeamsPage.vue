@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import { useQuasar } from "quasar";
 import { server, type Team, type OrgPerson, type Resident } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
@@ -7,6 +8,18 @@ import { useServerSessionStore } from "@/stores/server-session";
 const $q = useQuasar();
 const session = useServerSessionStore();
 const canEdit = computed(() => session.canEdit);
+
+// 저장하지 않은 드래프트가 있으면 화면을 떠날 때 확인을 받는다.
+onBeforeRouteLeave((_to, _from, next) => {
+  if (!dirty.value && !dirtyRes.value) { next(); return; }
+  $q.dialog({
+    title: "저장하지 않은 변경",
+    message: "저장하지 않은 배정 변경이 있습니다. 나가면 사라집니다. 계속할까요?",
+    cancel: { label: "취소", flat: true },
+    ok: { label: "나가기", color: "negative", unelevated: true },
+    persistent: true,
+  }).onOk(() => next()).onCancel(() => next(false));
+});
 
 const teams = ref<Team[]>([]);
 const staff = ref<OrgPerson[]>([]);
