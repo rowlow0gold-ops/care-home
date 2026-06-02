@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { useRoute } from "vue-router";
 import { useQuasar } from "quasar";
 import {
   server, type ConversationSummary, type ChatMessage, type ChatInvite, type OrgPerson,
@@ -7,11 +8,11 @@ import {
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
+const route = useRoute();
 const session = useServerSessionStore();
 const myId = computed(() => session.me?.id ?? "");
 
 const convos = ref<ConversationSummary[]>([]);
-const invites = ref<ChatInvite[]>([]);
 const active = ref<ConversationSummary | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref("");
@@ -24,16 +25,23 @@ let poll: number | undefined;
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
+// 상대가 자동 수락하기 전에는 other_names 가 비어 있어, 내가 시작한 대화는
+// 선택했던 상대 이름을 기억해 바로 보여준다.
+const localNames = ref<Record<string, string>>({});
 function convTitle(c: ConversationSummary) {
-  return c.title || c.other_names || "대화";
+  return c.title || c.other_names || localNames.value[c.id] || "대화";
 }
 
 async function loadList() {
   loadingList.value = true;
   try {
-    const [cs, iv] = await Promise.all([server.conversations(), server.myInvites()]);
+    // 수락/거절 개념 없이 대화가 바로 뜨도록, 들어온 초대는 조용히 자동 수락한다.
+    const iv = await server.myInvites().catch(() => [] as ChatInvite[]);
+    if (iv.length) {
+      await Promise.all(iv.map((i) => server.acceptInvite(i.id).catch(() => {})));
+    }
+    const cs = await server.conversations();
     convos.value = cs;
-    invites.value = iv;
     if (active.value) {
       const fresh = cs.find((c) => c.id === active.value!.id);
       if (fresh) active.value = fresh;
@@ -94,54 +102,51 @@ async function scrollBottom() {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
-// ── invites ───────────────────────────────────────────────────────────────
-async function respondInvite(iv: ChatInvite, accept: boolean) {
-  try {
-    if (accept) await server.acceptInvite(iv.id); else await server.rejectInvite(iv.id);
-    $q.notify({ type: "positive", message: accept ? "참여했습니다." : "거절했습니다." });
-    await loadList();
-  } catch (e: any) {
-    $q.notify({ type: "negative", message: `처리 실패: ${e?.message ?? e}` });
-  }
-}
-
-// ── new conversation / invite ───────────────────────────────────────────────
+// ── new conversation (상대 검색 후 대화 시작) ────────────────────────────────
 const showNew = ref(false);
 const people = ref<OrgPerson[]>([]);
-const newTitle = ref("");
+const peopleQuery = ref("");
 const newInvitee = ref<string | null>(null);
-const peopleOptions = computed(() =>
-  people.value
+const peopleOptions = computed(() => {
+  const q = peopleQuery.value.trim().toLowerCase();
+  return people.value
     .filter((p) => !p.is_inactive && p.id !== myId.value)
-    .map((p) => ({ label: `${p.full_name} · ${p.position_ko}`, value: p.id })),
-);
+    .filter((p) => !q || p.full_name.toLowerCase().includes(q) || (p.position_ko ?? "").toLowerCase().includes(q))
+    .map((p) => ({ label: `${p.full_name} · ${p.position_ko}`, value: p.id }));
+});
+function onPeopleFilter(val: string, update: (fn: () => void) => void) {
+  update(() => { peopleQuery.value = val; });
+}
 
 async function openNew() {
-  newTitle.value = "";
   newInvitee.value = null;
+  peopleQuery.value = "";
   showNew.value = true;
   if (!people.value.length) {
     try { people.value = (await server.orgPaged({ page: 1, page_size: 500 })).items; } catch { /* */ }
   }
 }
 async function createConv() {
-  if (!newInvitee.value) { $q.notify({ type: "negative", message: "초대할 상대를 선택하세요." }); return; }
+  if (!newInvitee.value) { $q.notify({ type: "negative", message: "대화할 상대를 선택하세요." }); return; }
   try {
-    const c = await server.createConversation({ title: newTitle.value.trim() || null, invitee_id: newInvitee.value });
+    const c = await server.createConversation({ invitee_id: newInvitee.value });
+    const picked = people.value.find((x) => x.id === newInvitee.value);
+    if (picked) localNames.value[c.id] = picked.full_name;
     showNew.value = false;
     await loadList();
     const fresh = convos.value.find((x) => x.id === c.id) ?? c;
     await openConv(fresh);
-    $q.notify({ type: "positive", message: "대화를 시작했습니다. 상대가 수락하면 대화할 수 있습니다." });
   } catch (e: any) {
-    $q.notify({ type: "negative", message: `생성 실패: ${e?.message ?? e}` });
+    $q.notify({ type: "negative", message: `시작 실패: ${e?.message ?? e}` });
   }
 }
 
+// 대화에 사람 추가 (수락 없이 바로 합류).
 const showInvite = ref(false);
 const inviteId = ref<string | null>(null);
 async function openInvite() {
   inviteId.value = null;
+  peopleQuery.value = "";
   showInvite.value = true;
   if (!people.value.length) {
     try { people.value = (await server.orgPaged({ page: 1, page_size: 500 })).items; } catch { /* */ }
@@ -152,16 +157,22 @@ async function doInvite() {
   try {
     await server.inviteToConversation(active.value.id, inviteId.value);
     showInvite.value = false;
-    $q.notify({ type: "positive", message: "초대했습니다." });
+    $q.notify({ type: "positive", message: "추가했습니다." });
   } catch (e: any) {
-    $q.notify({ type: "negative", message: `초대 실패: ${e?.message ?? e}` });
+    $q.notify({ type: "negative", message: `추가 실패: ${e?.message ?? e}` });
   }
 }
 
-watch(active, () => { /* keep poll cursor fresh */ });
-
-onMounted(() => {
-  loadList();
+onMounted(async () => {
+  await loadList();
+  // 휴가 승인 등에서 ?conv=<id> 로 넘어오면 해당 대화를 자동으로 연다.
+  const wanted = route.query.conv as string | undefined;
+  const wantedName = route.query.name as string | undefined;
+  if (wanted) {
+    if (wantedName) localNames.value[wanted] = wantedName;
+    const c = convos.value.find((x) => x.id === wanted);
+    if (c) await openConv(c);
+  }
   poll = window.setInterval(() => { loadList(); pollActive(); }, 4000);
 });
 onBeforeUnmount(() => { if (poll) clearInterval(poll); });
@@ -173,24 +184,8 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
     <div class="chat-sidebar">
       <div class="row items-center q-pa-md q-gutter-sm">
         <div class="text-h6 text-weight-bold col">대화</div>
-        <q-btn unelevated dense color="primary" icon="o_edit_note" label="새 대화" @click="openNew" />
+        <q-btn unelevated dense color="primary" icon="o_search" label="대화 상대 찾기" @click="openNew" />
       </div>
-
-      <q-list v-if="invites.length" bordered class="invite-box q-mx-md q-mb-sm rounded-borders">
-        <q-item-label header class="text-orange-9">받은 초대 {{ invites.length }}</q-item-label>
-        <q-item v-for="iv in invites" :key="iv.id">
-          <q-item-section>
-            <q-item-label>{{ iv.conversation_title || "대화 초대" }}</q-item-label>
-            <q-item-label caption>{{ iv.invited_by_name }} 님이 초대</q-item-label>
-          </q-item-section>
-          <q-item-section side>
-            <div class="row q-gutter-xs">
-              <q-btn dense unelevated color="positive" label="수락" @click="respondInvite(iv, true)" />
-              <q-btn dense outline color="grey-7" label="거절" @click="respondInvite(iv, false)" />
-            </div>
-          </q-item-section>
-        </q-item>
-      </q-list>
 
       <q-scroll-area class="chat-list">
         <q-list separator>
@@ -220,7 +215,7 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
             <div class="text-subtitle1 text-weight-bold">{{ convTitle(active) }}</div>
             <div class="text-caption text-grey-6">{{ active.other_names || "" }}</div>
           </div>
-          <q-btn flat dense icon="o_person_add" label="초대" @click="openInvite" />
+          <q-btn flat dense icon="o_person_add" label="추가" @click="openInvite" />
         </div>
 
         <div ref="threadEl" class="chat-thread">
@@ -247,34 +242,38 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
       </div>
     </div>
 
-    <!-- 새 대화 -->
+    <!-- 대화 상대 찾기 -->
     <q-dialog v-model="showNew">
-      <q-card style="min-width: 360px">
-        <q-card-section class="text-h6">새 대화</q-card-section>
-        <q-card-section class="q-gutter-md">
+      <q-card style="min-width: 380px">
+        <q-card-section class="text-h6">대화 상대 찾기</q-card-section>
+        <q-card-section>
           <q-select v-model="newInvitee" :options="peopleOptions" emit-value map-options outlined dense use-input
-            label="상대 선택" input-debounce="0" :loading="!people.length"
-            @filter="(_, u) => u(() => {})" />
-          <q-input v-model="newTitle" label="제목 (선택)" outlined dense />
+            label="이름으로 검색" input-debounce="0" :loading="!people.length" autofocus
+            @filter="onPeopleFilter">
+            <template #prepend><q-icon name="o_search" /></template>
+            <template #no-option><q-item><q-item-section class="text-grey-6">검색 결과 없음</q-item-section></q-item></template>
+          </q-select>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="취소" v-close-popup />
-          <q-btn unelevated color="primary" label="시작" @click="createConv" />
+          <q-btn unelevated color="primary" label="대화 시작" @click="createConv" />
         </q-card-actions>
       </q-card>
     </q-dialog>
 
-    <!-- 초대 -->
+    <!-- 대화에 추가 -->
     <q-dialog v-model="showInvite">
-      <q-card style="min-width: 340px">
-        <q-card-section class="text-h6">대화에 초대</q-card-section>
+      <q-card style="min-width: 360px">
+        <q-card-section class="text-h6">대화에 추가</q-card-section>
         <q-card-section>
           <q-select v-model="inviteId" :options="peopleOptions" emit-value map-options outlined dense use-input
-            label="초대할 상대" input-debounce="0" @filter="(_, u) => u(() => {})" />
+            label="이름으로 검색" input-debounce="0" @filter="onPeopleFilter">
+            <template #prepend><q-icon name="o_search" /></template>
+          </q-select>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat label="취소" v-close-popup />
-          <q-btn unelevated color="primary" label="초대" @click="doInvite" />
+          <q-btn unelevated color="primary" label="추가" @click="doInvite" />
         </q-card-actions>
       </q-card>
     </q-dialog>

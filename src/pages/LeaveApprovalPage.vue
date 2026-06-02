@@ -1,15 +1,29 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import { useQuasar } from "quasar";
 import { server } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
+const router = useRouter();
 const session = useServerSessionStore();
 // Day-off approval is a desk task — both 행정 and 접수 (branch_manager) can decide.
 const canDecide = computed(() => session.hasRole("branch_manager"));
 
 type Row = Awaited<ReturnType<typeof server.leaveRequestsPaged>>["items"][number];
+
+function openDetail(r: Row) {
+  router.push(`/staff/${r.user_id}`);
+}
+async function startChat(r: Row) {
+  try {
+    const c = await server.createConversation({ invitee_id: r.user_id });
+    router.push({ name: "chat", query: { conv: c.id, name: r.user_name } });
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `대화 시작 실패: ${e?.message ?? e}` });
+  }
+}
 const rows = ref<Row[]>([]);
 const loading = ref(false);
 const statusFilter = ref("pending");
@@ -109,7 +123,8 @@ onMounted(load);
       <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load" />
     </div>
 
-    <q-table :rows="rows" :columns="columns" row-key="id" flat bordered :loading="loading" hide-pagination :rows-per-page-options="[0]">
+    <q-table :rows="rows" :columns="columns" row-key="id" flat bordered :loading="loading" hide-pagination :rows-per-page-options="[0]"
+      class="cursor-pointer" @row-click="(_evt: Event, row: Row) => openDetail(row)">
       <template #body-cell-user_name="props">
         <q-td :props="props">
           <span class="text-weight-medium">{{ props.row.user_name }}</span>
@@ -130,11 +145,12 @@ onMounted(load);
       </template>
       <template #body-cell-actions="props">
         <q-td :props="props" class="text-center">
+          <q-btn dense flat round color="primary" icon="o_chat" :title="`${props.row.user_name}님과 대화`"
+            @click.stop="startChat(props.row)" class="q-mr-xs" />
           <template v-if="canDecide && props.row.status === 'pending'">
-            <q-btn dense unelevated color="positive" label="승인" :loading="acting === props.row.id" @click="decide(props.row, 'approved')" class="q-mr-xs" />
-            <q-btn dense outline color="negative" label="반려" :loading="acting === props.row.id" @click="decide(props.row, 'rejected')" />
+            <q-btn dense unelevated color="positive" label="승인" :loading="acting === props.row.id" @click.stop="decide(props.row, 'approved')" class="q-mr-xs" />
+            <q-btn dense outline color="negative" label="반려" :loading="acting === props.row.id" @click.stop="decide(props.row, 'rejected')" />
           </template>
-          <span v-else class="text-caption text-grey-4">—</span>
         </q-td>
       </template>
       <template #no-data>

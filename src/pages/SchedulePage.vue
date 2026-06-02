@@ -643,26 +643,50 @@ async function generateRotation() {
   }
   generating.value = true;
   try {
+    if (!teams.value.length) {
+      $q.notify({ type: "warning", message: "먼저 ‘조 관리’에서 조를 만드세요." });
+      return;
+    }
     const org = await server.orgPaged({ page: 1, page_size: 500 });
     const myBranch = session.me?.branch_id;
     const workers: OrgPerson[] = org.items.filter(
       (u) => !u.is_inactive && ["caregiver", "nurse"].includes(u.role) && (!myBranch || u.branch_id === myBranch),
     );
-    const targetTeams = selectedTeam.value
-      ? teams.value.filter((t) => t.id === selectedTeam.value)
-      : teams.value;
-    if (!targetTeams.length) {
-      $q.notify({ type: "warning", message: "먼저 ‘조 관리’에서 조를 만들고 인력을 배정하세요." });
+    if (!workers.length) {
+      $q.notify({ type: "warning", message: "배정할 돌봄 인력이 없습니다." });
       return;
     }
+
+    // team_id → workers. 조를 선택하면 그 조의 배정 인력만, 전체면 각자의 조(없으면
+    // 라운드로빈으로 골고루) 기준으로 묶는다. → 전체에서는 항상 결과가 나온다.
+    const byTeam = new Map<string, OrgPerson[]>();
+    if (selectedTeam.value) {
+      const assigned = workers.filter((w) => w.team_id === selectedTeam.value);
+      if (!assigned.length) {
+        $q.notify({ type: "warning", message: "이 조에 배정된 인력이 없습니다. ‘조 관리’에서 먼저 배정하세요." });
+        return;
+      }
+      byTeam.set(selectedTeam.value, assigned);
+    } else {
+      let rr = 0;
+      for (const w of workers) {
+        const tid = w.team_id && teams.value.some((t) => t.id === w.team_id)
+          ? w.team_id
+          : teams.value[rr++ % teams.value.length].id;
+        if (!byTeam.has(tid)) byTeam.set(tid, []);
+        byTeam.get(tid)!.push(w);
+      }
+    }
+
     const existing = new Set(entries.value.map((e) => `${e.staff_id}-${e.shift_date}`));
     const fresh: ScheduleEntry[] = [];
-    for (const team of targetTeams) {
-      const tw = workers.filter((w) => w.team_id === team.id);
+    for (const [tid, tw] of byTeam) {
+      const team = teams.value.find((t) => t.id === tid)!;
       const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
       tw.forEach((w, i) => {
         weekDates.value.forEach((d, dayIdx) => {
-          // staggered rest day — worker i rests on weekday (i % 7).
+          // staggered rest day — worker i rests on weekday (i % 7) so the whole
+          // team is never off on the same day.
           if (tw.length > 1 && i % 7 === dayIdx) return;
           const ds = localDateStr(d);
           const key = `${w.id}-${ds}`;
@@ -677,10 +701,12 @@ async function generateRotation() {
       });
     }
     if (!fresh.length) {
-      $q.notify({ type: "info", message: "생성할 빈 칸이 없습니다. (조 배정·주간을 확인하세요)" });
+      $q.notify({ type: "info", message: "생성할 빈 칸이 없습니다. (이미 채워져 있습니다)" });
       return;
     }
     pendingCreates.value = [...pendingCreates.value, ...fresh];
+    // 생성한 인력이 그리드에 행으로 보이도록 staffList 갱신.
+    if (!selectedTeam.value) await loadStaffList();
     rebuild();
     $q.notify({ type: "positive", message: `${fresh.length}건을 생성했습니다. 확인 후 저장하세요.` });
   } catch (e: any) {
