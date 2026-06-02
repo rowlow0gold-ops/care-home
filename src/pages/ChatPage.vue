@@ -217,9 +217,6 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
             <div class="text-subtitle1 text-weight-bold">{{ convTitle(active) }}</div>
             <div class="text-caption text-grey-6">{{ active.other_names || "" }}</div>
           </div>
-          <q-btn flat round dense icon="o_delete" color="grey-7" @click="confirmDelete(active)">
-            <q-tooltip>대화 삭제</q-tooltip>
-          </q-btn>
         </div>
 
         <div ref="threadEl" class="chat-thread">
