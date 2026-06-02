@@ -114,7 +114,7 @@ onMounted(load);
   <q-page class="q-pa-lg">
     <div class="row items-center q-mb-md q-gutter-sm">
       <div class="col">
-        <div class="text-h5 text-weight-bold">휴가 승인</div>
+        <div class="text-h5 text-weight-bold">휴가</div>
         <div class="text-caption text-grey-6">태블릿에서 신청된 휴무를 승인/반려합니다</div>
       </div>
       <div class="col-auto" style="min-width: 130px">
