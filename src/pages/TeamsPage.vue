@@ -76,10 +76,45 @@ async function load() {
 // ── 팀 인력 보드 (카드 클릭 → 드래그로 추가/제거/이동) ───────────────────────
 const showBoard = ref(false);
 const boardTeamId = ref<string | null>(null);
+// 드래프트 오버레이: 저장 전까지 서버에 반영하지 않는다. (worker_id → team_id|null)
+const pending = ref(new Map<string, string | null>());
+const dirty = computed(() => pending.value.size > 0);
+const pendingCount = computed(() => pending.value.size);
+const savingBoard = ref(false);
+function effectiveTeam(w: OrgPerson): string | null {
+  return pending.value.has(w.id) ? (pending.value.get(w.id) ?? null) : (w.team_id ?? null);
+}
+function stageAssign(w: OrgPerson, target: string | null) {
+  const orig = w.team_id ?? null;
+  if (orig === target) pending.value.delete(w.id); // 원래대로 → 변경 없음
+  else pending.value.set(w.id, target);
+  pending.value = new Map(pending.value); // 반응성
+}
+async function saveBoard() {
+  if (!pending.value.size) return;
+  savingBoard.value = true;
+  try {
+    for (const [id, tid] of pending.value) await server.assignTeam(id, tid);
+    const n = pending.value.size;
+    pending.value = new Map();
+    await load();
+    $q.notify({ type: "positive", message: `${n}명 배정을 저장했습니다.` });
+  } catch (e: any) {
+    $q.notify({ type: "negative", message: `저장 실패: ${e?.message ?? e}` });
+  } finally {
+    savingBoard.value = false;
+  }
+}
+function revertBoard() {
+  if (!pending.value.size) return;
+  pending.value = new Map();
+  $q.notify({ type: "info", message: "변경을 되돌렸습니다." });
+}
+
 interface BoardCol { id: string | null; name: string; type: string | null; workers: OrgPerson[] }
 const boardColumns = computed<BoardCol[]>(() => [
-  { id: null, name: "미배정", type: null, workers: caregivers.value.filter((w) => !w.team_id) },
-  ...teams.value.map((t) => ({ id: t.id, name: t.name, type: t.team_type, workers: caregivers.value.filter((w) => w.team_id === t.id) })),
+  { id: null, name: "미배정", type: null, workers: caregivers.value.filter((w) => effectiveTeam(w) === null) },
+  ...teams.value.map((t) => ({ id: t.id, name: t.name, type: t.team_type, workers: caregivers.value.filter((w) => effectiveTeam(w) === t.id) })),
 ]);
 function openBoard(t: Team) {
   boardTeamId.value = t.id;
@@ -126,18 +161,8 @@ async function onUp(e: PointerEvent) {
   if (!id || over === null) return;            // 컬럼 밖에 드롭
   const target = over === "__none__" ? null : over;
   const w = staff.value.find((s) => s.id === id);
-  if (!w || w.team_id === target) return;
-  await doAssign(w, target);
-}
-async function doAssign(w: OrgPerson, teamId: string | null) {
-  try {
-    await server.assignTeam(w.id, teamId);
-    w.team_id = teamId;
-    w.team_name = teams.value.find((t) => t.id === teamId)?.name ?? null;
-    $q.notify({ type: "positive", message: `${w.full_name} → ${teamId ? w.team_name : "미배정"}` });
-  } catch (e: any) {
-    $q.notify({ type: "negative", message: `배정 실패: ${e?.message ?? e}` });
-  }
+  if (!w || effectiveTeam(w) === target) return;
+  stageAssign(w, target);                       // 드래프트에 반영 (저장 시 실제 반영)
 }
 
 // ── 엑셀 내보내기 / 가져오기 (팀 배정) ───────────────────────────────────────
@@ -172,12 +197,12 @@ async function onImportFile(e: Event) {
       const tid = tn ? teamByName.get(tn) : null; // 빈 칸 → 미배정
       if (tid === undefined) continue;             // 모르는 팀 이름 → 건너뜀
       const w = staff.value.find((s) => s.id === id);
-      if (!w || w.team_id === (tid ?? null)) continue;
-      await server.assignTeam(id, tid ?? null);
+      if (!w || effectiveTeam(w) === (tid ?? null)) continue;
+      stageAssign(w, tid ?? null);                 // 드래프트에 반영
       n++;
     }
-    await load();
-    $q.notify({ type: "positive", message: `${n}명의 팀 배정을 반영했습니다.` });
+    if (!showBoard.value) showBoard.value = true;  // 보드를 열어 검토 후 저장
+    $q.notify({ type: "positive", message: `${n}명 임시 반영 — 검토 후 ‘저장’을 누르세요.` });
   } catch (err: any) {
     $q.notify({ type: "negative", message: `가져오기 실패: ${err?.message ?? err}` });
   } finally {
@@ -334,7 +359,11 @@ onMounted(load);
     <q-dialog v-model="showBoard" maximized>
       <q-card>
         <q-card-section class="row items-center q-gutter-sm">
-          <div class="text-h6 col">인력 배치 — 드래그로 팀 이동</div>
+          <div class="text-h6">인력 배치 — 드래그로 팀 이동</div>
+          <q-badge v-if="dirty" color="orange" :label="`미저장 ${pendingCount}`" />
+          <q-space />
+          <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirty" :loading="savingBoard" @click="saveBoard" />
+          <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!dirty" @click="revertBoard" />
           <q-btn outline dense color="primary" icon="o_download" label="엑셀 내보내기" @click="exportAssignments" />
           <q-btn v-if="canEdit" outline dense color="primary" icon="o_upload" label="엑셀 가져오기" :loading="importing" @click="triggerImport" />
           <input ref="fileInput" type="file" accept=".xlsx,.xls" class="hidden" @change="onImportFile" />
