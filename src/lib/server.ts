@@ -460,6 +460,9 @@ export const server = {
       body: JSON.stringify(payload),
     });
   },
+  deleteConversation(convId: string) {
+    return fetchJson(`/api/v1/chat/conversations/${convId}`, { method: "DELETE" });
+  },
   inviteToConversation(convId: string, inviteeId: string) {
     return fetchJson<{ id: string; ok: boolean }>(`/api/v1/chat/conversations/${convId}/invite`, {
       method: "POST",

@@ -55,6 +55,25 @@ async function loadList() {
   }
 }
 
+function confirmDelete(c: ConversationSummary) {
+  $q.dialog({
+    title: "대화 삭제",
+    message: `‘${convTitle(c)}’ 대화를 삭제할까요? 메시지가 모두 사라집니다.`,
+    cancel: { label: "취소", flat: true },
+    ok: { label: "삭제", color: "negative", unelevated: true },
+    persistent: true,
+  }).onOk(async () => {
+    try {
+      await server.deleteConversation(c.id);
+      if (active.value?.id === c.id) { active.value = null; messages.value = []; }
+      await loadList();
+      $q.notify({ type: "positive", message: "대화를 삭제했습니다." });
+    } catch (e: any) {
+      $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` });
+    }
+  });
+}
+
 async function openConv(c: ConversationSummary) {
   active.value = c;
   messages.value = [];
@@ -143,28 +162,6 @@ async function createConv() {
   }
 }
 
-// 대화에 사람 추가 (수락 없이 바로 합류).
-const showInvite = ref(false);
-const inviteId = ref<string | null>(null);
-async function openInvite() {
-  inviteId.value = null;
-  peopleQuery.value = "";
-  showInvite.value = true;
-  if (!people.value.length) {
-    try { people.value = (await server.orgPaged({ page: 1, page_size: 500 })).items; } catch { /* */ }
-  }
-}
-async function doInvite() {
-  if (!active.value || !inviteId.value) return;
-  try {
-    await server.inviteToConversation(active.value.id, inviteId.value);
-    showInvite.value = false;
-    $q.notify({ type: "positive", message: "추가했습니다." });
-  } catch (e: any) {
-    $q.notify({ type: "negative", message: `추가 실패: ${e?.message ?? e}` });
-  }
-}
-
 onMounted(async () => {
   await loadList();
   // 휴가 승인 등에서 ?conv=<id> 로 넘어오면 해당 대화를 자동으로 연다.
@@ -201,7 +198,10 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
             </q-item-section>
             <q-item-section side top>
               <q-item-label caption>{{ fmtTime(c.last_message_at) }}</q-item-label>
-              <q-badge v-if="c.unread_count" color="red" rounded :label="c.unread_count" class="q-mt-xs" />
+              <div class="row items-center q-gutter-xs q-mt-xs">
+                <q-badge v-if="c.unread_count" color="red" rounded :label="c.unread_count" />
+                <q-btn flat round dense size="sm" icon="o_delete" color="grey-6" @click.stop="confirmDelete(c)" />
+              </div>
             </q-item-section>
           </q-item>
           <div v-if="!convos.length && !loadingList" class="text-center text-grey-5 q-py-xl">대화가 없습니다</div>
@@ -217,7 +217,9 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
             <div class="text-subtitle1 text-weight-bold">{{ convTitle(active) }}</div>
             <div class="text-caption text-grey-6">{{ active.other_names || "" }}</div>
           </div>
-          <q-btn flat dense icon="o_person_add" label="추가" @click="openInvite" />
+          <q-btn flat round dense icon="o_delete" color="grey-7" @click="confirmDelete(active)">
+            <q-tooltip>대화 삭제</q-tooltip>
+          </q-btn>
         </div>
 
         <div ref="threadEl" class="chat-thread">
@@ -263,22 +265,6 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
       </q-card>
     </q-dialog>
 
-    <!-- 대화에 추가 -->
-    <q-dialog v-model="showInvite">
-      <q-card style="min-width: 360px">
-        <q-card-section class="text-h6">대화에 추가</q-card-section>
-        <q-card-section>
-          <q-select v-model="inviteId" :options="peopleOptions" emit-value map-options outlined dense use-input
-            label="이름으로 검색" input-debounce="0" @filter="onPeopleFilter">
-            <template #prepend><q-icon name="o_search" /></template>
-          </q-select>
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="취소" v-close-popup />
-          <q-btn unelevated color="primary" label="추가" @click="doInvite" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
   </q-page>
 </template>
 
