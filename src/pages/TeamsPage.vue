@@ -231,6 +231,61 @@ async function onUp(e: PointerEvent) {
   }
 }
 
+// ── 팀 순서 변경 (카드/칼럼 핸들 드래그) — sort_order 가 모든 화면 순서를 결정 ──
+let teamDragId: string | null = null;
+const teamDragging = ref(false);
+const teamOverId = ref<string>("");
+const reordering = ref(false);
+function teamUnder(x: number, y: number): string | null {
+  const g = document.getElementById("team-drag-ghost");
+  if (g) g.style.display = "none";
+  const el = document.elementFromPoint(x, y)?.closest("[data-team-id]") as HTMLElement | null;
+  if (g) g.style.display = "";
+  return el ? (el.dataset.teamId ?? null) : null;
+}
+function startTeamReorder(e: PointerEvent, id: string, label: string) {
+  if (!canEdit.value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  teamDragId = id;
+  teamDragging.value = true;
+  dragLabel.value = label;
+  ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
+  window.addEventListener("pointermove", onTeamMove);
+  window.addEventListener("pointerup", onTeamUp);
+}
+function onTeamMove(e: PointerEvent) {
+  ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
+  teamOverId.value = teamUnder(e.clientX, e.clientY) ?? "";
+}
+async function onTeamUp(e: PointerEvent) {
+  window.removeEventListener("pointermove", onTeamMove);
+  window.removeEventListener("pointerup", onTeamUp);
+  ghost.value = { ...ghost.value, show: false };
+  teamDragging.value = false;
+  const over = teamUnder(e.clientX, e.clientY);
+  teamOverId.value = "";
+  const id = teamDragId; teamDragId = null;
+  if (!id || !over || over === id) return;
+  const arr = [...teams.value];
+  const from = arr.findIndex((t) => t.id === id);
+  const to = arr.findIndex((t) => t.id === over);
+  if (from < 0 || to < 0) return;
+  const [moved] = arr.splice(from, 1);
+  arr.splice(to, 0, moved);
+  teams.value = arr; // 낙관적 반영
+  reordering.value = true;
+  try {
+    await Promise.all(arr.map((t, i) => (t.sort_order === i + 1 ? null : server.updateTeam(t.id, { sort_order: i + 1 }))));
+    await load();
+  } catch (err: any) {
+    $q.notify({ type: "negative", message: `순서 변경 실패: ${err?.message ?? err}` });
+    await load();
+  } finally {
+    reordering.value = false;
+  }
+}
+
 // ── 어르신 배정 보드 (인력 배치와 동일한 드래그 보드) ────────────────────────
 const pendingRes = ref(new Map<string, string | null>());
 const historyR = ref<Array<{ id: string; prev: string | null }>>([]);
@@ -360,10 +415,15 @@ onMounted(load);
       <q-tab-panel name="teams" class="q-pa-none">
     <div class="row q-col-gutter-md">
       <div v-for="t in teams" :key="t.id" class="col-12 col-sm-6 col-md-4 col-lg-3">
-        <q-card flat bordered class="team-card cursor-pointer" @click="openTeamDetail(t)">
+        <q-card flat bordered class="team-card cursor-pointer" :class="{ 'team-over': teamOverId === t.id }"
+          :data-team-id="t.id" @click="openTeamDetail(t)">
           <div class="team-bar" :style="{ background: `hsl(${t.color_hue} 60% 55%)` }" />
           <q-card-section class="q-pb-xs">
             <div class="row items-center no-wrap">
+              <q-icon v-if="canEdit" name="o_drag_indicator" class="team-handle q-mr-xs" color="grey-5"
+                @pointerdown="startTeamReorder($event, t.id, t.name)" @click.stop>
+                <q-tooltip>드래그하여 순서 변경</q-tooltip>
+              </q-icon>
               <div class="col text-subtitle1 text-weight-bold ellipsis">{{ t.name }}</div>
               <template v-if="canEdit">
                 <q-btn flat round dense size="sm" icon="o_edit" @click.stop="openEdit(t)" />
@@ -404,8 +464,11 @@ onMounted(load);
         </div>
         <div class="board">
           <div v-for="col in boardColumns" :key="colKey(col.id)" class="board-col"
-            :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id), 'col-focus': boardTeamId === col.id }">
+            :data-col-id="colKey(col.id)" :data-team-id="col.id ?? undefined"
+            :class="{ 'col-over': overCol === colKey(col.id), 'col-focus': boardTeamId === col.id, 'team-over': teamOverId === col.id }">
             <div class="board-col-head">
+              <q-icon v-if="canEdit && col.id" name="o_drag_indicator" class="team-handle q-mr-xs" color="grey-5"
+                @pointerdown="startTeamReorder($event, col.id, col.name)" @click.stop />
               <span class="text-weight-bold">{{ col.name }}</span>
               <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
               <q-badge color="grey-4" text-color="grey-9" :label="col.workers.length" class="q-ml-xs" />
@@ -441,8 +504,11 @@ onMounted(load);
         </div>
         <div class="board">
           <div v-for="col in residentBoardColumns" :key="colKey(col.id)" class="board-col"
-            :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id) }">
+            :data-col-id="colKey(col.id)" :data-team-id="col.id ?? undefined"
+            :class="{ 'col-over': overCol === colKey(col.id), 'team-over': teamOverId === col.id }">
             <div class="board-col-head">
+              <q-icon v-if="canEdit && col.id" name="o_drag_indicator" class="team-handle q-mr-xs" color="grey-5"
+                @pointerdown="startTeamReorder($event, col.id, col.name)" @click.stop />
               <span class="text-weight-bold">{{ col.name }}</span>
               <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
               <q-badge color="grey-4" text-color="grey-9" :label="col.residents.length" class="q-ml-xs" />
@@ -466,7 +532,7 @@ onMounted(load);
     </q-tab-panels>
 
     <!-- drag ghost -->
-    <div v-show="dragging" id="team-drag-ghost" class="drag-ghost"
+    <div v-show="dragging || teamDragging" id="team-drag-ghost" class="drag-ghost"
       :style="{ left: ghost.x + 'px', top: ghost.y + 'px', display: ghost.show ? 'block' : 'none' }">{{ dragLabel }}</div>
 
     <!-- 팀 상세 -->
@@ -553,6 +619,9 @@ onMounted(load);
 
 <style scoped>
 .team-card { overflow: hidden; }
+.team-card.team-over { box-shadow: 0 0 0 2px #1976d2 inset; }
+.team-handle { cursor: grab; touch-action: none; }
+.board-col.team-over { box-shadow: 0 0 0 2px #1976d2 inset; }
 .team-bar { height: 6px; }
 .hue-dot { width: 28px; height: 28px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
 .hue-on { border-color: #1976d2; box-shadow: 0 0 0 2px white inset; }
