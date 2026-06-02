@@ -231,11 +231,17 @@ async function onUp(e: PointerEvent) {
   }
 }
 
-// ── 팀 순서 변경 (카드/칼럼 핸들 드래그) — sort_order 가 모든 화면 순서를 결정 ──
+// ── 팀 순서 변경 — sort_order 가 모든 화면 순서를 결정. 드래그 중 실시간으로
+//    카드가 재배치되고(라이브 미리보기), 놓으면 저장한다. 카드 전체를 잡을 수
+//    있고, 살짝 움직여야 드래그로 인식(클릭=상세 열기와 구분). ───────────────────
 let teamDragId: string | null = null;
 const teamDragging = ref(false);
 const teamOverId = ref<string>("");
 const reordering = ref(false);
+let pendDown: { id: string; sx: number; sy: number } | null = null;
+let justDragged = false;
+let lastOrigOrder: string[] = [];
+
 function teamUnder(x: number, y: number): string | null {
   const g = document.getElementById("team-drag-ghost");
   if (g) g.style.display = "none";
@@ -243,37 +249,20 @@ function teamUnder(x: number, y: number): string | null {
   if (g) g.style.display = "";
   return el ? (el.dataset.teamId ?? null) : null;
 }
-function startTeamReorder(e: PointerEvent, id: string, label: string) {
-  if (!canEdit.value) return;
-  e.preventDefault();
-  e.stopPropagation();
-  teamDragId = id;
-  teamDragging.value = true;
-  dragLabel.value = label;
-  ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
-  window.addEventListener("pointermove", onTeamMove);
-  window.addEventListener("pointerup", onTeamUp);
+function liveReorder(overId: string) {
+  if (!teamDragId || !overId || overId === teamDragId) return;
+  const arr = teams.value;
+  const from = arr.findIndex((t) => t.id === teamDragId);
+  const to = arr.findIndex((t) => t.id === overId);
+  if (from < 0 || to < 0 || from === to) return;
+  const next = [...arr];
+  const [m] = next.splice(from, 1);
+  next.splice(to, 0, m);
+  teams.value = next; // 라이브 재배치
 }
-function onTeamMove(e: PointerEvent) {
-  ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
-  teamOverId.value = teamUnder(e.clientX, e.clientY) ?? "";
-}
-async function onTeamUp(e: PointerEvent) {
-  window.removeEventListener("pointermove", onTeamMove);
-  window.removeEventListener("pointerup", onTeamUp);
-  ghost.value = { ...ghost.value, show: false };
-  teamDragging.value = false;
-  const over = teamUnder(e.clientX, e.clientY);
-  teamOverId.value = "";
-  const id = teamDragId; teamDragId = null;
-  if (!id || !over || over === id) return;
-  const arr = [...teams.value];
-  const from = arr.findIndex((t) => t.id === id);
-  const to = arr.findIndex((t) => t.id === over);
-  if (from < 0 || to < 0) return;
-  const [moved] = arr.splice(from, 1);
-  arr.splice(to, 0, moved);
-  teams.value = arr; // 낙관적 반영
+async function persistOrder() {
+  const arr = teams.value;
+  if (arr.map((t) => t.id).join() === lastOrigOrder.join()) return; // 변화 없음
   reordering.value = true;
   try {
     await Promise.all(arr.map((t, i) => (t.sort_order === i + 1 ? null : server.updateTeam(t.id, { name: t.name, sort_order: i + 1 }))));
@@ -284,6 +273,73 @@ async function onTeamUp(e: PointerEvent) {
   } finally {
     reordering.value = false;
   }
+}
+function beginTeamDrag(id: string) {
+  teamDragId = id;
+  teamDragging.value = true;
+  dragLabel.value = teams.value.find((t) => t.id === id)?.name ?? "";
+  lastOrigOrder = teams.value.map((t) => t.id);
+}
+function moveGhost(e: PointerEvent) {
+  ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
+}
+// 카드 전체 드래그 (임계값으로 클릭과 구분)
+function cardDown(e: PointerEvent, t: Team) {
+  if (!canEdit.value) return;
+  pendDown = { id: t.id, sx: e.clientX, sy: e.clientY };
+  window.addEventListener("pointermove", cardMove);
+  window.addEventListener("pointerup", cardUp);
+}
+function cardMove(e: PointerEvent) {
+  if (!pendDown) return;
+  if (!teamDragging.value) {
+    if (Math.hypot(e.clientX - pendDown.sx, e.clientY - pendDown.sy) < 6) return;
+    beginTeamDrag(pendDown.id);
+  }
+  moveGhost(e);
+  const over = teamUnder(e.clientX, e.clientY);
+  teamOverId.value = over ?? "";
+  if (over) liveReorder(over);
+}
+async function cardUp() {
+  window.removeEventListener("pointermove", cardMove);
+  window.removeEventListener("pointerup", cardUp);
+  const wasDrag = teamDragging.value;
+  pendDown = null;
+  teamDragging.value = false;
+  teamOverId.value = "";
+  teamDragId = null;
+  ghost.value = { ...ghost.value, show: false };
+  if (wasDrag) { justDragged = true; await persistOrder(); }
+}
+function onCardClick(t: Team) {
+  if (justDragged) { justDragged = false; return; } // 방금 드래그였으면 상세 열지 않음
+  openTeamDetail(t);
+}
+// 보드 칼럼 핸들 드래그 (헤더 핸들) — 동일 로직 재사용
+function startTeamReorder(e: PointerEvent, id: string) {
+  if (!canEdit.value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  beginTeamDrag(id);
+  moveGhost(e);
+  window.addEventListener("pointermove", colMove);
+  window.addEventListener("pointerup", colUp);
+}
+function colMove(e: PointerEvent) {
+  moveGhost(e);
+  const over = teamUnder(e.clientX, e.clientY);
+  teamOverId.value = over ?? "";
+  if (over) liveReorder(over);
+}
+async function colUp() {
+  window.removeEventListener("pointermove", colMove);
+  window.removeEventListener("pointerup", colUp);
+  teamDragging.value = false;
+  teamOverId.value = "";
+  teamDragId = null;
+  ghost.value = { ...ghost.value, show: false };
+  await persistOrder();
 }
 
 // ── 어르신 배정 보드 (인력 배치와 동일한 드래그 보드) ────────────────────────
@@ -415,19 +471,16 @@ onMounted(load);
       <q-tab-panel name="teams" class="q-pa-none">
     <div class="row q-col-gutter-md">
       <div v-for="t in teams" :key="t.id" class="col-12 col-sm-6 col-md-4 col-lg-3">
-        <q-card flat bordered class="team-card cursor-pointer" :class="{ 'team-over': teamOverId === t.id }"
-          :data-team-id="t.id" @click="openTeamDetail(t)">
+        <q-card flat bordered class="team-card" :class="{ 'team-over': teamOverId === t.id, 'team-grab': canEdit, 'team-dragging': teamDragging && teamDragId === t.id }"
+          :data-team-id="t.id" @click="onCardClick(t)" @pointerdown="cardDown($event, t)">
           <div class="team-bar" :style="{ background: `hsl(${t.color_hue} 60% 55%)` }" />
           <q-card-section class="q-pb-xs">
             <div class="row items-center no-wrap">
-              <q-icon v-if="canEdit" name="o_drag_indicator" class="team-handle q-mr-xs" color="grey-5"
-                @pointerdown="startTeamReorder($event, t.id, t.name)" @click.stop>
-                <q-tooltip>드래그하여 순서 변경</q-tooltip>
-              </q-icon>
+              <q-icon v-if="canEdit" name="o_drag_indicator" color="grey-4" class="q-mr-xs" />
               <div class="col text-subtitle1 text-weight-bold ellipsis">{{ t.name }}</div>
               <template v-if="canEdit">
-                <q-btn flat round dense size="sm" icon="o_edit" @click.stop="openEdit(t)" />
-                <q-btn flat round dense size="sm" icon="o_delete" color="grey-6" @click.stop="removeTeam(t)" />
+                <q-btn flat round dense size="sm" icon="o_edit" @pointerdown.stop @click.stop="openEdit(t)" />
+                <q-btn flat round dense size="sm" icon="o_delete" color="grey-6" @pointerdown.stop @click.stop="removeTeam(t)" />
               </template>
             </div>
             <div class="row items-center q-gutter-xs q-mt-xs">
@@ -468,7 +521,8 @@ onMounted(load);
             :class="{ 'col-over': overCol === colKey(col.id), 'col-focus': boardTeamId === col.id, 'team-over': teamOverId === col.id }">
             <div class="board-col-head">
               <q-icon v-if="canEdit && col.id" name="o_drag_indicator" class="team-handle q-mr-xs" color="grey-5"
-                @pointerdown="startTeamReorder($event, col.id, col.name)" @click.stop />
+                @pointerdown="startTeamReorder($event, col.id)" @click.stop />
+
               <span class="text-weight-bold">{{ col.name }}</span>
               <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
               <q-badge color="grey-4" text-color="grey-9" :label="col.workers.length" class="q-ml-xs" />
@@ -508,7 +562,8 @@ onMounted(load);
             :class="{ 'col-over': overCol === colKey(col.id), 'team-over': teamOverId === col.id }">
             <div class="board-col-head">
               <q-icon v-if="canEdit && col.id" name="o_drag_indicator" class="team-handle q-mr-xs" color="grey-5"
-                @pointerdown="startTeamReorder($event, col.id, col.name)" @click.stop />
+                @pointerdown="startTeamReorder($event, col.id)" @click.stop />
+
               <span class="text-weight-bold">{{ col.name }}</span>
               <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
               <q-badge color="grey-4" text-color="grey-9" :label="col.residents.length" class="q-ml-xs" />
@@ -618,8 +673,11 @@ onMounted(load);
 </template>
 
 <style scoped>
-.team-card { overflow: hidden; }
+.team-card { overflow: hidden; transition: opacity .12s, box-shadow .12s; user-select: none; }
+.team-card.team-grab { cursor: grab; }
+.team-card.team-grab:active { cursor: grabbing; }
 .team-card.team-over { box-shadow: 0 0 0 2px #1976d2 inset; }
+.team-card.team-dragging { opacity: .45; }
 .team-handle { cursor: grab; touch-action: none; }
 .board-col.team-over { box-shadow: 0 0 0 2px #1976d2 inset; }
 .team-bar { height: 6px; }
