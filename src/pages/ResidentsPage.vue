@@ -13,6 +13,7 @@ const session = useServerSessionStore();
 // ── Filters ─────────────────────────────────────────────────────────────────
 const q = ref("");
 const gradeFilter = ref("");
+const careTypeFilter = ref("");
 const statusFilter = ref("active");
 const page = ref(1);
 const pageSize = ref(25);
@@ -34,6 +35,15 @@ const statusOptions = [
   { label: "퇴소", value: "discharged" },
   { label: "사망", value: "deceased" },
 ];
+// 서비스 유형: 요양(residential) / 주간(day) / 방문(visit)
+const careTypeOptions = [
+  { label: "전체 유형", value: "" },
+  { label: "요양", value: "residential" },
+  { label: "주간", value: "day" },
+  { label: "방문", value: "visit" },
+];
+const careTypeLabel: Record<string, string> = { residential: "요양", day: "주간", visit: "방문" };
+const careTypeColor: Record<string, string> = { residential: "teal", day: "indigo", visit: "deep-orange" };
 
 const sexLabel: Record<string, string> = { male: "남", female: "여", other: "기타" };
 const statusLabel: Record<string, string> = { active: "재원", discharged: "퇴소", deceased: "사망" };
@@ -56,6 +66,7 @@ async function load() {
       q: q.value.trim() || undefined,
       branch_id: session.me?.branch_id ?? undefined,
       care_grade: gradeFilter.value || undefined,
+      care_type: careTypeFilter.value || undefined,
       status: statusFilter.value,
       page: page.value,
       page_size: pageSize.value,
@@ -70,7 +81,7 @@ async function load() {
     loading.value = false;
   }
 }
-watch([gradeFilter, statusFilter, page, pageSize, sortBy, sortDesc], load);
+watch([gradeFilter, careTypeFilter, statusFilter, page, pageSize, sortBy, sortDesc], load);
 function applySearch() { page.value = 1; load(); }
 function setSort(col: typeof sortBy.value) {
   if (sortBy.value === col) sortDesc.value = !sortDesc.value;
@@ -81,6 +92,7 @@ function setSort(col: typeof sortBy.value) {
 const columns = [
   { name: "full_name", label: "이름", field: "full_name", align: "left" as const },
   { name: "room_number", label: "호실", field: "room_number", align: "left" as const },
+  { name: "care_type", label: "유형", field: "care_type", align: "center" as const },
   { name: "sex", label: "성별", field: "sex", align: "center" as const },
   { name: "age", label: "나이", field: "birth_date", align: "right" as const },
   { name: "care_grade", label: "장기요양", field: "care_grade", align: "right" as const },
@@ -111,7 +123,9 @@ const addRef = ref();
 const submitting = ref(false);
 const emptyAdd = () => ({
   full_name: "", sex: "female" as "male" | "female" | "other",
-  birth_date: "", care_grade: "" as string, room_number: "", admitted_on: new Date().toISOString().slice(0, 10),
+  birth_date: "", care_grade: "" as string,
+  care_type: "residential" as "residential" | "day" | "visit",
+  room_number: "", admitted_on: new Date().toISOString().slice(0, 10),
 });
 const addForm = ref(emptyAdd());
 const sexOptions = [{ label: "여", value: "female" }, { label: "남", value: "male" }, { label: "기타", value: "other" }];
@@ -127,6 +141,7 @@ async function submitAdd() {
       sex: addForm.value.sex,
       birth_date: addForm.value.birth_date,
       care_grade: addForm.value.care_grade || null,
+      care_type: addForm.value.care_type,
       room_number: addForm.value.room_number.trim() || null,
       admitted_on: addForm.value.admitted_on,
     });
@@ -168,6 +183,9 @@ onMounted(load);
         </q-input>
       </div>
       <div class="col-6 col-sm-3 col-md-2">
+        <q-select v-model="careTypeFilter" :options="careTypeOptions" dense outlined emit-value map-options />
+      </div>
+      <div class="col-6 col-sm-3 col-md-2">
         <q-select v-model="gradeFilter" :options="gradeOptions" dense outlined emit-value map-options />
       </div>
       <div class="col-6 col-sm-3 col-md-2">
@@ -204,6 +222,11 @@ onMounted(load);
       </template>
       <template #body-cell-room_number="props">
         <q-td :props="props">{{ props.row.room_number ?? "—" }}</q-td>
+      </template>
+      <template #body-cell-care_type="props">
+        <q-td :props="props" class="text-center">
+          <q-badge :color="careTypeColor[props.row.care_type] ?? 'grey'" :label="careTypeLabel[props.row.care_type] ?? props.row.care_type" />
+        </q-td>
       </template>
       <template #body-cell-sex="props"><q-td :props="props">{{ sexLabel[props.row.sex] }}</q-td></template>
       <template #body-cell-age="props"><q-td :props="props">{{ age(props.row.birth_date) }}세</q-td></template>
@@ -243,8 +266,9 @@ onMounted(load);
             </div>
             <div class="row q-gutter-sm">
               <q-select class="col" v-model="addForm.care_grade" :options="addGradeOptions" label="장기요양등급" outlined dense emit-value map-options clearable />
-              <q-input class="col" v-model="addForm.room_number" label="호실" outlined dense />
+              <q-select class="col" v-model="addForm.care_type" :options="careTypeOptions.filter((c) => c.value)" label="서비스 유형" outlined dense emit-value map-options />
             </div>
+            <q-input v-model="addForm.room_number" label="호실" outlined dense />
             <q-input v-model="addForm.admitted_on" label="입소일 *" mask="####-##-##" outlined dense :rules="[(v)=>/^\d{4}-\d{2}-\d{2}$/.test(v)||'YYYY-MM-DD']" lazy-rules="ondemand" />
           </q-form>
         </q-card-section>

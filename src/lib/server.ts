@@ -171,6 +171,7 @@ export const server = {
     q?: string;
     branch_id?: string;
     care_grade?: string;
+    care_type?: string;
     status?: string;
     page?: number;
     page_size?: number;
@@ -181,6 +182,7 @@ export const server = {
     if (params.q) qs.set("q", params.q);
     if (params.branch_id) qs.set("branch_id", params.branch_id);
     if (params.care_grade) qs.set("care_grade", params.care_grade);
+    if (params.care_type) qs.set("care_type", params.care_type);
     qs.set("status", params.status ?? "active");
     qs.set("page", String(params.page ?? 1));
     qs.set("page_size", String(params.page_size ?? 25));
@@ -214,6 +216,7 @@ export const server = {
     sex: "male" | "female" | "other";
     birth_date: string;
     care_grade?: string | null;
+    care_type?: "residential" | "day" | "visit";
     room_number?: string | null;
     admitted_on: string;
   }) {
@@ -694,6 +697,7 @@ export interface Resident {
   sex: "male" | "female" | "other";
   birth_date: string;
   care_grade: string | null;
+  care_type: "residential" | "day" | "visit";
   room_number: string | null;
   admitted_on: string;
   status: "active" | "discharged" | "deceased";
