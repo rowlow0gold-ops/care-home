@@ -74,6 +74,27 @@ function confirmDelete(c: ConversationSummary) {
   });
 }
 
+function confirmDeleteAll() {
+  if (!convos.value.length) return;
+  $q.dialog({
+    title: "전체 삭제",
+    message: `대화 ${convos.value.length}개를 모두 삭제할까요? 메시지가 모두 사라집니다.`,
+    cancel: { label: "취소", flat: true },
+    ok: { label: "전체 삭제", color: "negative", unelevated: true },
+    persistent: true,
+  }).onOk(async () => {
+    try {
+      for (const id of convos.value.map((c) => c.id)) await server.deleteConversation(id);
+      active.value = null;
+      messages.value = [];
+      await loadList();
+      $q.notify({ type: "positive", message: "모든 대화를 삭제했습니다." });
+    } catch (e: any) {
+      $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` });
+    }
+  });
+}
+
 async function openConv(c: ConversationSummary) {
   active.value = c;
   messages.value = [];
@@ -183,6 +204,7 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
     <div class="chat-sidebar">
       <div class="row items-center q-pa-md q-gutter-sm">
         <div class="text-h6 text-weight-bold col">대화</div>
+        <q-btn v-if="convos.length" flat dense color="negative" icon="o_delete_sweep" label="전체 삭제" @click="confirmDeleteAll" />
         <q-btn unelevated dense color="primary" icon="o_search" label="대화 상대 찾기" @click="openNew" />
       </div>
 
