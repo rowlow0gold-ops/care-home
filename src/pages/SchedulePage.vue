@@ -226,13 +226,15 @@ function clearDraft() {
 
 // ── Teams (조) — "split by shift" filter ───────────────────────────────────────
 const teams = ref<Team[]>([]);
-const selectedTeam = ref<string>("");   // "" = 전체
-const teamOptions = computed(() => [
-  { label: "전체 조", value: "" },
-  ...teams.value.map((t) => ({ label: `${t.name} (${t.member_count})`, value: t.id })),
-]);
+const selectedTeam = ref<string>("");   // 항상 특정 조 (전체 조 없음)
+const teamOptions = computed(() =>
+  teams.value.map((t) => ({ label: `${t.name} (${t.member_count})`, value: t.id })),
+);
 async function loadTeams() {
-  try { teams.value = await server.teams(); } catch { teams.value = []; }
+  try {
+    teams.value = await server.teams();
+    if (!selectedTeam.value && teams.value.length) selectedTeam.value = teams.value[0].id;
+  } catch { teams.value = []; }
 }
 
 const staffRows = computed<StaffOption[]>(() => {
@@ -311,31 +313,35 @@ async function loadSchedule() {
     loading.value = false;
   }
 }
-async function loadStaffList() {
+// 선택한 조에 배정된 돌봄 인력을 그리드 행으로 — 셀에 근무를 드래그&드롭해 배치한다.
+async function loadTeamStaff(teamId: string) {
   try {
-    const users = await server.staff();
-    // Branch-scoped: only this 센터's rosterable workers.
+    const org = await server.orgPaged({ page: 1, page_size: 500 });
     const myBranch = session.me?.branch_id;
-    staffList.value = users
-      .filter(u => !u.deactivated_at
-        && ["caregiver", "nurse", "branch_manager"].includes(u.role)
+    staffList.value = org.items
+      .filter((u) => !u.is_inactive
+        && ["caregiver", "nurse"].includes(u.role)
+        && u.team_id === teamId
         && (!myBranch || u.branch_id === myBranch))
-      .map(u => ({ label: u.full_name, value: u.id, role: u.role }))
+      .map((u) => ({ label: u.full_name, value: u.id, role: u.role }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  } catch (_) { /* best effort */ }
+  } catch { staffList.value = []; }
 }
 
 watch(viewMode, loadSchedule);
 watch([weekStartStr, weekEndStr], () => { if (viewMode.value === "week")   loadSchedule(); });
 watch([monthStartStr, monthEndStr], () => { if (viewMode.value === "month") loadSchedule(); });
 watch(selectedTeam, async () => {
-  // When a 조 is selected, rows are the team's workers (derived from the
-  // team-filtered roster); 전체 reloads the full branch staff list.
-  if (selectedTeam.value) staffList.value = [];
-  else await loadStaffList();
+  if (selectedTeam.value) await loadTeamStaff(selectedTeam.value);
   await loadSchedule();
 });
-onMounted(async () => { await loadPresets(); await loadTeams(); await loadStaffList(); await loadResidentCounts(); await loadSchedule(); });
+onMounted(async () => {
+  await loadPresets();
+  await loadTeams();
+  if (selectedTeam.value) await loadTeamStaff(selectedTeam.value);
+  await loadResidentCounts();
+  await loadSchedule();
+});
 
 // ── Shift presets (근무 유형) ─────────────────────────────────────────────────
 interface Preset { label: string; start: string; end: string; hours: number }
@@ -741,7 +747,7 @@ async function generateRotation() {
       return;
     }
     pendingCreates.value = [...pendingCreates.value, ...fresh];
-    if (!selectedTeam.value) await loadStaffList(); // 생성 인력이 행으로 보이도록
+    if (selectedTeam.value) await loadTeamStaff(selectedTeam.value); // 생성 인력이 행으로 보이도록
     rebuild();
     const shortTxt = understaffed ? " · 일부 교대 인원 부족" : "";
     $q.notify({ type: "positive", message: `${fresh.length}건 생성 (1:10 커버리지)${missTxt}${shortTxt}. 확인 후 저장하세요.` });
@@ -760,41 +766,20 @@ async function loadResidentCounts() {
     activeResidents.value = r.items;
   } catch { /* alerts are best-effort */ }
 }
-const residentsForRatio = computed(() =>
-  selectedTeam.value
-    ? activeResidents.value.filter((r) => r.team_id === selectedTeam.value).length
-    : activeResidents.value.length,
-);
-function coveredHours(dateStr: string): Set<number> {
-  const set = new Set<number>();
-  for (const e of entries.value) {
-    if (e.shift_date !== dateStr) continue;
-    const sh = parseInt(e.shift_start.slice(0, 2), 10);
-    let eh = parseInt(e.shift_end.slice(0, 2), 10);
-    if (e.shift_end === "00:00") eh = 24;
-    if (eh <= sh) eh += 24; // wraps past midnight
-    for (let h = sh; h < eh; h++) set.add(h % 24);
-  }
-  return set;
-}
-function gapRanges(dateStr: string): string[] {
-  const cov = coveredHours(dateStr);
-  const gaps: number[] = [];
-  for (let h = 0; h < 24; h++) if (!cov.has(h)) gaps.push(h);
-  const ranges: string[] = [];
-  let i = 0;
-  while (i < gaps.length) {
-    let j = i;
-    while (j + 1 < gaps.length && gaps[j + 1] === gaps[j] + 1) j++;
-    const s = String(gaps[i]).padStart(2, "0");
-    const e = String((gaps[j] + 1) % 24).padStart(2, "0");
-    ranges.push(`${s}:00–${e}:00`);
-    i = j + 1;
-  }
-  return ranges;
-}
 interface Alert { date: string; kind: "gap" | "ratio"; text: string }
+function shiftName(start: string): string {
+  return start === "07:00" ? "주간" : start === "15:00" ? "오후" : start === "23:00" ? "야간" : "주간";
+}
+// 선택한 조 기준, 교대별로 1:10 인원을 충족하는지 점검한다.
+//   요양: 3교대(07–15/15–23/23–07) 각각, 주간: 1교대, 방문: 점검 없음.
+//   아직 편성하지 않은 날(근무 0건)은 표시하지 않는다.
 const staffingAlerts = computed<Alert[]>(() => {
+  const team = teams.value.find((t) => t.id === selectedTeam.value);
+  if (!team) return [];
+  const shifts = shiftsForTeam(team);
+  if (!shifts.length) return []; // 방문: 수동
+  const elders = activeResidents.value.filter((r) => r.team_id === team.id).length;
+  const required = Math.max(1, Math.ceil(elders / 10)); // 1:10
   const out: Alert[] = [];
   const dates =
     viewMode.value === "week"
@@ -804,13 +789,16 @@ const staffingAlerts = computed<Alert[]>(() => {
         );
   for (const ds of dates) {
     const dayEs = entries.value.filter((e) => e.shift_date === ds);
-    if (!dayEs.length) continue; // only flag days that are actually being scheduled
-    const ranges = gapRanges(ds);
-    if (ranges.length) out.push({ date: ds, kind: "gap", text: `24시간 공백 ${ranges.join(", ")}` });
-    const staffOn = new Set(dayEs.map((e) => e.staff_id)).size;
-    const res = residentsForRatio.value;
-    if (res && staffOn > 0 && res / staffOn > 10) {
-      out.push({ date: ds, kind: "ratio", text: `어르신 ${res}명 : 근무 ${staffOn}명 (1:${(res / staffOn).toFixed(1)} — 권장 1:10)` });
+    if (!dayEs.length) continue; // 편성 시작한 날만 점검
+    for (const sh of shifts) {
+      const cnt = new Set(dayEs.filter((e) => e.shift_start === sh.start).map((e) => e.staff_id)).size;
+      if (cnt < required) {
+        out.push({
+          date: ds,
+          kind: cnt === 0 ? "gap" : "ratio",
+          text: `${shiftName(sh.start)}(${sh.start}–${sh.end}) ${cnt}/${required}명${cnt === 0 ? " · 공백" : ""} — 어르신 ${elders}명`,
+        });
+      }
     }
   }
   return out;

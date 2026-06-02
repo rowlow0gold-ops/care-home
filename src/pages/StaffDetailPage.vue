@@ -127,8 +127,6 @@ onMounted(load);
       </q-card-section>
     </q-card>
 
-    <div class="text-caption text-grey-6 q-mt-md">휴가 신청·승인은 추후 이 화면에서 처리됩니다.</div>
-
     <!-- Edit dialog -->
     <q-dialog v-model="showEdit" persistent>
       <q-card style="min-width: 480px">
