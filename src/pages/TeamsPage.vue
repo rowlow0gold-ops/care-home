@@ -146,9 +146,23 @@ function exportAssignments() {
       .catch((e) => $q.notify({ type: "negative", message: `내보내기 실패: ${e}` }));
   });
 }
-function openBoard(t: Team) {
+// 팀 카드 클릭 → 팀 상세
+const showTeamDetail = ref(false);
+const detailTeam = ref<Team | null>(null);
+function openTeamDetail(t: Team) {
+  detailTeam.value = t;
+  showTeamDetail.value = true;
+}
+const detailWorkers = computed(() => (detailTeam.value ? caregivers.value.filter((w) => w.team_id === detailTeam.value!.id) : []));
+const detailResidents = computed(() => (detailTeam.value ? activeResidentsBranch.value.filter((r) => r.team_id === detailTeam.value!.id) : []));
+function goWorkers(t: Team) {
   boardTeamId.value = t.id;
+  showTeamDetail.value = false;
   tab.value = "workers";
+}
+function goResidents() {
+  showTeamDetail.value = false;
+  tab.value = "residents";
 }
 
 // pointer 기반 드래그 (WKWebView 에서 HTML5 DnD 불안정 → pointer 사용)
@@ -333,7 +347,7 @@ onMounted(load);
       <q-tab-panel name="teams" class="q-pa-none">
     <div class="row q-col-gutter-md">
       <div v-for="t in teams" :key="t.id" class="col-12 col-sm-6 col-md-4 col-lg-3">
-        <q-card flat bordered class="team-card cursor-pointer" @click="openBoard(t)">
+        <q-card flat bordered class="team-card cursor-pointer" @click="openTeamDetail(t)">
           <div class="team-bar" :style="{ background: `hsl(${t.color_hue} 60% 55%)` }" />
           <q-card-section class="q-pb-xs">
             <div class="row items-center no-wrap">
@@ -441,6 +455,59 @@ onMounted(load);
     <!-- drag ghost -->
     <div v-show="dragging" id="team-drag-ghost" class="drag-ghost"
       :style="{ left: ghost.x + 'px', top: ghost.y + 'px', display: ghost.show ? 'block' : 'none' }">{{ dragLabel }}</div>
+
+    <!-- 팀 상세 -->
+    <q-dialog v-model="showTeamDetail">
+      <q-card v-if="detailTeam" style="min-width: 460px; max-width: 92vw">
+        <div class="team-bar" :style="{ background: `hsl(${detailTeam.color_hue} 60% 55%)`, height: '8px' }" />
+        <q-card-section class="row items-center q-gutter-sm">
+          <div class="col">
+            <div class="text-h6">{{ detailTeam.name }}</div>
+            <div class="row items-center q-gutter-xs q-mt-xs">
+              <q-badge :color="teamTypeColor[detailTeam.team_type] ?? 'grey'" :label="teamTypeLabel[detailTeam.team_type] ?? detailTeam.team_type" />
+              <span class="text-caption text-grey-6">{{ shiftText(detailTeam) }}</span>
+            </div>
+          </div>
+          <template v-if="canEdit">
+            <q-btn flat round dense icon="o_edit" @click="openEdit(detailTeam)" />
+            <q-btn flat round dense icon="o_delete" color="grey-6" @click="removeTeam(detailTeam)" />
+          </template>
+          <q-btn flat round dense icon="o_close" v-close-popup />
+        </q-card-section>
+        <q-separator />
+        <q-card-section class="row text-center">
+          <div class="col"><div class="text-h6">{{ detailWorkers.length }}</div><div class="text-caption text-grey-6">인력</div></div>
+          <div class="col"><div class="text-h6">{{ detailResidents.length }}</div><div class="text-caption text-grey-6">어르신</div></div>
+          <div class="col">
+            <q-chip dense :color="ratioOf(detailTeam.id).warn ? 'negative' : 'green-1'" :text-color="ratioOf(detailTeam.id).warn ? 'white' : 'green-9'"
+              :icon="ratioOf(detailTeam.id).warn ? 'o_warning' : undefined" class="q-mt-xs">{{ ratioOf(detailTeam.id).text }}</q-chip>
+            <div class="text-caption text-grey-6">비율 (권장 1:10)</div>
+          </div>
+        </q-card-section>
+        <q-separator />
+        <q-card-section style="max-height: 40vh; overflow:auto">
+          <div class="text-subtitle2 q-mb-xs">담당 인력 ({{ detailWorkers.length }})</div>
+          <div v-if="detailWorkers.length" class="row q-gutter-xs q-mb-md">
+            <q-chip v-for="w in detailWorkers" :key="w.id" dense color="blue-grey-1" text-color="blue-grey-9">
+              {{ w.full_name }}<span class="text-caption text-grey-6 q-ml-xs">{{ w.position_ko }}</span>
+            </q-chip>
+          </div>
+          <div v-else class="text-grey-5 text-caption q-mb-md">배정된 인력이 없습니다.</div>
+
+          <div class="text-subtitle2 q-mb-xs">담당 어르신 ({{ detailResidents.length }})</div>
+          <div v-if="detailResidents.length" class="row q-gutter-xs">
+            <q-chip v-for="r in detailResidents" :key="r.id" dense color="teal-1" text-color="teal-9">
+              {{ r.full_name }}<span class="text-caption text-grey-6 q-ml-xs">{{ r.room_number ?? "—" }}호</span>
+            </q-chip>
+          </div>
+          <div v-else class="text-grey-5 text-caption">배정된 어르신이 없습니다.</div>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn outline color="primary" icon="o_badge" label="인력 배치" @click="goWorkers(detailTeam)" />
+          <q-btn outline color="primary" icon="o_elderly" label="어르신 배정" @click="goResidents" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <!-- 팀 추가/수정 -->
     <q-dialog v-model="showTeamDialog">
