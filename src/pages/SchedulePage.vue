@@ -838,7 +838,7 @@ const showAlerts = ref(true);
         <q-select
           v-model="selectedTeam"
           :options="teamOptions"
-          label="조"
+          label="팀"
           outlined dense emit-value map-options
         />
       </div>

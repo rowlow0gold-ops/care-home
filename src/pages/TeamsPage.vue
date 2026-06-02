@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useQuasar } from "quasar";
+import { invoke } from "@tauri-apps/api/core";
+import * as XLSX from "xlsx";
 import { server, type Team, type OrgPerson, type Resident } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
@@ -12,21 +14,9 @@ const teams = ref<Team[]>([]);
 const staff = ref<OrgPerson[]>([]);
 const residents = ref<Resident[]>([]);
 const loading = ref(false);
-const saving = ref<string | null>(null);
-// 요양보호사·간호사만 배정 대상으로 본다 (돌봄 인력).
 const careRoles = new Set(["caregiver", "nurse"]);
-const onlyCare = ref(true);
 
-const careStaff = computed(() =>
-  staff.value.filter((s) => !s.is_inactive && (!onlyCare.value || careRoles.has(s.role))),
-);
-
-const teamOptions = computed(() => [
-  { label: "미배정", value: null as string | null },
-  ...teams.value.map((t) => ({ label: t.name, value: t.id })),
-]);
-
-// 팀 유형: 요양(24h) / 주간 / 방문
+// 팀 유형
 const TEAM_TYPE_OPTIONS = [
   { label: "요양 (24시간)", value: "residential" as const },
   { label: "주간", value: "day" as const },
@@ -34,30 +24,36 @@ const TEAM_TYPE_OPTIONS = [
 ];
 const teamTypeLabel: Record<string, string> = { residential: "요양", day: "주간", visit: "방문" };
 const teamTypeColor: Record<string, string> = { residential: "teal", day: "indigo", visit: "deep-orange" };
-// 유형별 기본 근무 창
 const TYPE_DEFAULT_SHIFT: Record<string, { start: string; end: string }> = {
   residential: { start: "07:00", end: "19:00" },
   day: { start: "09:00", end: "18:00" },
   visit: { start: "09:00", end: "13:00" },
 };
+const roleKo: Record<string, string> = { caregiver: "요양보호사", nurse: "간호사", branch_manager: "시설장", hq: "본사" };
 
+// 근무 표기: 요양=24시간, 방문=custom, 그 외=시간창
+function shiftText(t: Team): string {
+  if (t.team_type === "residential") return "24시간";
+  if (t.team_type === "visit") return "custom";
+  return `근무 ${t.shift_start_hm} ~ ${t.shift_end_hm}`;
+}
+
+const myBranch = computed(() => session.me?.branch_id ?? null);
+const caregivers = computed(() =>
+  staff.value.filter((s) => !s.is_inactive && careRoles.has(s.role) && (!myBranch.value || s.branch_id === myBranch.value)),
+);
 function workersOf(teamId: string) {
-  return staff.value.filter((s) => !s.is_inactive && careRoles.has(s.role) && s.team_id === teamId).length;
+  return caregivers.value.filter((s) => s.team_id === teamId).length;
 }
 function residentsOf(teamId: string) {
   return residents.value.filter((r) => r.status === "active" && r.team_id === teamId).length;
 }
-/** 어르신 : 돌봄인력 비율. 10을 초과하면 경고. */
 function ratioOf(teamId: string): { text: string; warn: boolean } {
-  const w = workersOf(teamId);
-  const r = residentsOf(teamId);
+  const w = workersOf(teamId), r = residentsOf(teamId);
   if (w === 0) return { text: r > 0 ? "인력 없음" : "—", warn: r > 0 };
   const per = r / w;
   return { text: `1 : ${per.toFixed(1)}`, warn: per > 10 };
 }
-const unassignedCount = computed(
-  () => careStaff.value.filter((s) => !s.team_id).length,
-);
 
 async function load() {
   loading.value = true;
@@ -77,29 +73,126 @@ async function load() {
   }
 }
 
-async function reassign(person: OrgPerson, teamId: string | null) {
-  if (person.team_id === teamId) return;
-  saving.value = person.id;
+// ── 팀 인력 보드 (카드 클릭 → 드래그로 추가/제거/이동) ───────────────────────
+const showBoard = ref(false);
+const boardTeamId = ref<string | null>(null);
+interface BoardCol { id: string | null; name: string; type: string | null; workers: OrgPerson[] }
+const boardColumns = computed<BoardCol[]>(() => [
+  { id: null, name: "미배정", type: null, workers: caregivers.value.filter((w) => !w.team_id) },
+  ...teams.value.map((t) => ({ id: t.id, name: t.name, type: t.team_type, workers: caregivers.value.filter((w) => w.team_id === t.id) })),
+]);
+function openBoard(t: Team) {
+  boardTeamId.value = t.id;
+  showBoard.value = true;
+}
+
+// pointer 기반 드래그 (WKWebView 에서 HTML5 DnD 불안정 → pointer 사용)
+let dragId: string | null = null;
+const dragging = ref(false);
+const dragLabel = ref("");
+const overCol = ref<string>("");
+const ghost = ref({ x: 0, y: 0, show: false });
+
+function colKey(id: string | null) { return id ?? "__none__"; }
+function colUnder(x: number, y: number): string | null {
+  const g = document.getElementById("team-drag-ghost");
+  if (g) g.style.display = "none";
+  const el = document.elementFromPoint(x, y)?.closest("[data-col-id]") as HTMLElement | null;
+  if (g) g.style.display = "";
+  return el ? (el.dataset.colId ?? null) : null;
+}
+function startDragWorker(e: PointerEvent, w: OrgPerson) {
+  if (!canEdit.value) return;
+  e.preventDefault();
+  dragId = w.id;
+  dragLabel.value = w.full_name;
+  dragging.value = true;
+  ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+function onMove(e: PointerEvent) {
+  ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
+  overCol.value = colUnder(e.clientX, e.clientY) ?? "";
+}
+async function onUp(e: PointerEvent) {
+  window.removeEventListener("pointermove", onMove);
+  window.removeEventListener("pointerup", onUp);
+  ghost.value = { ...ghost.value, show: false };
+  dragging.value = false;
+  const over = colUnder(e.clientX, e.clientY);
+  overCol.value = "";
+  const id = dragId; dragId = null;
+  if (!id || over === null) return;            // 컬럼 밖에 드롭
+  const target = over === "__none__" ? null : over;
+  const w = staff.value.find((s) => s.id === id);
+  if (!w || w.team_id === target) return;
+  await doAssign(w, target);
+}
+async function doAssign(w: OrgPerson, teamId: string | null) {
   try {
-    await server.assignTeam(person.id, teamId);
-    person.team_id = teamId;
-    person.team_name = teams.value.find((t) => t.id === teamId)?.name ?? null;
-    $q.notify({ type: "positive", message: `${person.full_name} → ${person.team_name ?? "미배정"}` });
+    await server.assignTeam(w.id, teamId);
+    w.team_id = teamId;
+    w.team_name = teams.value.find((t) => t.id === teamId)?.name ?? null;
+    $q.notify({ type: "positive", message: `${w.full_name} → ${teamId ? w.team_name : "미배정"}` });
   } catch (e: any) {
     $q.notify({ type: "negative", message: `배정 실패: ${e?.message ?? e}` });
-  } finally {
-    saving.value = null;
   }
 }
 
-// ── 어르신 → 조 배정 (호실 기준 일괄) ────────────────────────────────────────
+// ── 엑셀 내보내기 / 가져오기 (팀 배정) ───────────────────────────────────────
+function exportAssignments() {
+  const rows = caregivers.value.map((w) => ({
+    user_id: w.id, 이름: w.full_name, 직책: w.position_ko, 구분: roleKo[w.role] ?? w.role, 팀: w.team_name ?? "",
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "팀배정");
+  const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+  invoke<string | null>("save_excel", { filename: "팀배정.xlsx", data: Array.from(new Uint8Array(out)) })
+    .then((p) => { if (p) $q.notify({ type: "positive", message: "팀 배정을 내보냈습니다." }); })
+    .catch((e) => $q.notify({ type: "negative", message: `내보내기 실패: ${e}` }));
+}
+const fileInput = ref<HTMLInputElement | null>(null);
+const importing = ref(false);
+function triggerImport() { fileInput.value?.click(); }
+async function onImportFile(e: Event) {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (!f) return;
+  importing.value = true;
+  try {
+    const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]) as any[];
+    const teamByName = new Map(teams.value.map((t) => [t.name, t.id]));
+    let n = 0;
+    for (const r of rows) {
+      const id = String(r.user_id ?? "").trim();
+      if (!id) continue;
+      const tn = String(r["팀"] ?? "").trim();
+      const tid = tn ? teamByName.get(tn) : null; // 빈 칸 → 미배정
+      if (tid === undefined) continue;             // 모르는 팀 이름 → 건너뜀
+      const w = staff.value.find((s) => s.id === id);
+      if (!w || w.team_id === (tid ?? null)) continue;
+      await server.assignTeam(id, tid ?? null);
+      n++;
+    }
+    await load();
+    $q.notify({ type: "positive", message: `${n}명의 팀 배정을 반영했습니다.` });
+  } catch (err: any) {
+    $q.notify({ type: "negative", message: `가져오기 실패: ${err?.message ?? err}` });
+  } finally {
+    importing.value = false;
+    (e.target as HTMLInputElement).value = "";
+  }
+}
+
+// ── 어르신 → 팀 배정 (호실 기준 일괄) ────────────────────────────────────────
 const showAssignResidents = ref(false);
 const assignTeamId = ref<string | null>(null);
 const roomFrom = ref("");
 const roomTo = ref("");
 const unassignedOnly = ref(false);
 const assigningResidents = ref(false);
-
 const assignTargetTeam = computed(() => teams.value.find((t) => t.id === assignTeamId.value) ?? null);
 const matchedResidents = computed<Resident[]>(() => {
   const team = assignTargetTeam.value;
@@ -108,7 +201,7 @@ const matchedResidents = computed<Resident[]>(() => {
   const to = roomTo.value.trim() ? Number(roomTo.value) : null;
   return residents.value.filter((r) => {
     if (r.status !== "active") return false;
-    if (r.branch_id !== team.branch_id) return false; // 같은 센터의 어르신만
+    if (r.branch_id !== team.branch_id) return false;
     if (unassignedOnly.value && r.team_id) return false;
     if (from !== null || to !== null) {
       const n = Number(r.room_number);
@@ -119,12 +212,9 @@ const matchedResidents = computed<Resident[]>(() => {
     return true;
   });
 });
-
 function openAssignResidents() {
   assignTeamId.value = teams.value[0]?.id ?? null;
-  roomFrom.value = "";
-  roomTo.value = "";
-  unassignedOnly.value = false;
+  roomFrom.value = ""; roomTo.value = ""; unassignedOnly.value = false;
   showAssignResidents.value = true;
 }
 async function assignResidents() {
@@ -149,7 +239,6 @@ const showTeamDialog = ref(false);
 const editingId = ref<string | null>(null);
 const form = ref({ name: "", team_type: "residential" as "residential" | "day" | "visit", shift_start_hm: "07:00", shift_end_hm: "19:00", color_hue: 210 });
 const HUE_PRESETS = [210, 260, 150, 30, 340, 110];
-
 function openNew() {
   editingId.value = null;
   form.value = { name: "", team_type: "residential", shift_start_hm: "07:00", shift_end_hm: "19:00", color_hue: 210 };
@@ -160,7 +249,6 @@ function openEdit(t: Team) {
   form.value = { name: t.name, team_type: t.team_type, shift_start_hm: t.shift_start_hm, shift_end_hm: t.shift_end_hm, color_hue: t.color_hue };
   showTeamDialog.value = true;
 }
-// 유형을 바꾸면 근무 창을 그 유형의 기본값으로 맞춘다.
 function onTypeChange(v: "residential" | "day" | "visit") {
   const d = TYPE_DEFAULT_SHIFT[v];
   if (d) { form.value.shift_start_hm = d.start; form.value.shift_end_hm = d.end; }
@@ -172,11 +260,8 @@ async function saveTeam() {
     return;
   }
   try {
-    if (editingId.value) {
-      await server.updateTeam(editingId.value, { ...f, name: f.name.trim() });
-    } else {
-      await server.createTeam({ ...f, name: f.name.trim(), sort_order: teams.value.length + 1 });
-    }
+    if (editingId.value) await server.updateTeam(editingId.value, { ...f, name: f.name.trim() });
+    else await server.createTeam({ ...f, name: f.name.trim(), sort_order: teams.value.length + 1 });
     showTeamDialog.value = false;
     await load();
     $q.notify({ type: "positive", message: "저장되었습니다." });
@@ -190,15 +275,13 @@ function removeTeam(t: Team) {
     return;
   }
   $q.dialog({
-    title: "조 삭제", message: `'${t.name}' 조를 삭제할까요?`,
+    title: "팀 삭제", message: `'${t.name}' 팀을 삭제할까요?`,
     cancel: { label: "취소", flat: true }, ok: { label: "삭제", color: "negative", unelevated: true }, persistent: true,
   }).onOk(async () => {
     try { await server.deleteTeam(t.id); await load(); $q.notify({ type: "positive", message: "삭제되었습니다." }); }
     catch (e: any) { $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` }); }
   });
 }
-
-const roleKo: Record<string, string> = { caregiver: "요양보호사", nurse: "간호사", branch_manager: "시설장", hq: "본사" };
 
 onMounted(load);
 </script>
@@ -207,31 +290,30 @@ onMounted(load);
   <q-page class="q-pa-lg">
     <div class="row items-center q-mb-md q-gutter-sm">
       <div class="col">
-        <div class="text-h5 text-weight-bold">조 관리</div>
-        <div class="text-caption text-grey-6">돌봄 인력을 조로 나누고, 각 조가 담당할 어르신을 배정합니다</div>
+        <div class="text-h5 text-weight-bold">팀</div>
+        <div class="text-caption text-grey-6">팀 카드를 눌러 인력을 드래그로 배치하고, 각 팀이 담당할 어르신을 배정합니다</div>
       </div>
-      <q-toggle v-model="onlyCare" label="돌봄 인력만" dense />
       <q-btn v-if="canEdit" outline color="primary" icon="o_elderly" label="어르신 배정" @click="openAssignResidents" />
-      <q-btn v-if="canEdit" unelevated color="primary" icon="o_add" label="조 추가" @click="openNew" />
+      <q-btn v-if="canEdit" unelevated color="primary" icon="o_add" label="팀 추가" @click="openNew" />
       <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load" />
     </div>
 
-    <!-- 조 카드 -->
-    <div class="row q-col-gutter-md q-mb-lg">
+    <!-- 팀 카드 -->
+    <div class="row q-col-gutter-md">
       <div v-for="t in teams" :key="t.id" class="col-12 col-sm-6 col-md-4 col-lg-3">
-        <q-card flat bordered class="team-card">
+        <q-card flat bordered class="team-card cursor-pointer" @click="openBoard(t)">
           <div class="team-bar" :style="{ background: `hsl(${t.color_hue} 60% 55%)` }" />
           <q-card-section class="q-pb-xs">
             <div class="row items-center no-wrap">
               <div class="col text-subtitle1 text-weight-bold ellipsis">{{ t.name }}</div>
               <template v-if="canEdit">
-                <q-btn flat round dense size="sm" icon="o_edit" @click="openEdit(t)" />
-                <q-btn flat round dense size="sm" icon="o_delete" color="grey-6" @click="removeTeam(t)" />
+                <q-btn flat round dense size="sm" icon="o_edit" @click.stop="openEdit(t)" />
+                <q-btn flat round dense size="sm" icon="o_delete" color="grey-6" @click.stop="removeTeam(t)" />
               </template>
             </div>
             <div class="row items-center q-gutter-xs q-mt-xs">
               <q-badge :color="teamTypeColor[t.team_type] ?? 'grey'" :label="teamTypeLabel[t.team_type] ?? t.team_type" />
-              <span class="text-caption text-grey-6">근무 {{ t.shift_start_hm }} ~ {{ t.shift_end_hm }}</span>
+              <span class="text-caption text-grey-6">{{ shiftText(t) }}</span>
             </div>
           </q-card-section>
           <q-card-section class="row q-pt-none text-center">
@@ -239,55 +321,63 @@ onMounted(load);
             <div class="col"><div class="text-h6">{{ residentsOf(t.id) }}</div><div class="text-caption text-grey-6">어르신</div></div>
             <div class="col">
               <q-chip dense :color="ratioOf(t.id).warn ? 'negative' : 'green-1'" :text-color="ratioOf(t.id).warn ? 'white' : 'green-9'"
-                :icon="ratioOf(t.id).warn ? 'o_warning' : undefined" class="q-mt-xs">
-                {{ ratioOf(t.id).text }}
-              </q-chip>
+                :icon="ratioOf(t.id).warn ? 'o_warning' : undefined" class="q-mt-xs">{{ ratioOf(t.id).text }}</q-chip>
               <div class="text-caption text-grey-6">비율</div>
             </div>
           </q-card-section>
         </q-card>
       </div>
-      <div v-if="!teams.length && !loading" class="col-12 text-center text-grey-5 q-py-lg">조가 없습니다. ‘조 추가’로 만들어 주세요.</div>
+      <div v-if="!teams.length && !loading" class="col-12 text-center text-grey-5 q-py-lg">팀이 없습니다. ‘팀 추가’로 만들어 주세요.</div>
     </div>
 
-    <!-- 인력 배정 -->
-    <div class="row items-center q-mb-sm">
-      <div class="text-subtitle1 text-weight-bold col">인력 배정</div>
-      <q-chip v-if="unassignedCount" dense color="orange-1" text-color="orange-9" icon="o_person_off">미배정 {{ unassignedCount }}명</q-chip>
-    </div>
-    <q-table :rows="careStaff" :columns="[
-        { name: 'name', label: '이름', field: 'full_name', align: 'left' },
-        { name: 'position', label: '직책', field: 'position_ko', align: 'left' },
-        { name: 'role', label: '구분', field: 'role', align: 'left' },
-        { name: 'team', label: '담당 조', field: 'team_id', align: 'left' },
-      ] as any" row-key="id" flat bordered :loading="loading" :rows-per-page-options="[0]" hide-pagination>
-      <template #body-cell-role="props">
-        <q-td :props="props"><span class="text-grey-7">{{ roleKo[props.row.role] ?? props.row.role }}</span></q-td>
-      </template>
-      <template #body-cell-team="props">
-        <q-td :props="props" style="min-width: 180px">
-          <q-select v-if="canEdit" :model-value="props.row.team_id" :options="teamOptions" emit-value map-options
-            dense outlined options-dense :loading="saving === props.row.id"
-            @update:model-value="(v: string | null) => reassign(props.row, v)" />
-          <q-chip v-else dense :color="props.row.team_id ? 'blue-1' : 'grey-2'" :text-color="props.row.team_id ? 'blue-9' : 'grey-7'">
-            {{ props.row.team_name ?? '미배정' }}
-          </q-chip>
-        </q-td>
-      </template>
-      <template #no-data>
-        <div class="full-width column flex-center q-py-xl">
-          <q-icon name="o_groups" size="3rem" color="grey-4" />
-          <div class="text-grey-5 q-mt-sm">표시할 인력이 없습니다</div>
-        </div>
-      </template>
-    </q-table>
+    <!-- 인력 보드 -->
+    <q-dialog v-model="showBoard" maximized>
+      <q-card>
+        <q-card-section class="row items-center q-gutter-sm">
+          <div class="text-h6 col">인력 배치 — 드래그로 팀 이동</div>
+          <q-btn outline dense color="primary" icon="o_download" label="엑셀 내보내기" @click="exportAssignments" />
+          <q-btn v-if="canEdit" outline dense color="primary" icon="o_upload" label="엑셀 가져오기" :loading="importing" @click="triggerImport" />
+          <input ref="fileInput" type="file" accept=".xlsx,.xls" class="hidden" @change="onImportFile" />
+          <q-btn flat round dense icon="o_close" v-close-popup />
+        </q-card-section>
+        <q-separator />
+        <q-card-section>
+          <div class="text-caption text-grey-6 q-mb-sm">
+            <q-icon name="o_drag_indicator" size="xs" /> 직원 칩을 다른 팀(또는 미배정)으로 드래그하세요. 미배정 → 팀 = 추가, 팀 → 미배정 = 제거.
+          </div>
+          <div class="board">
+            <div v-for="col in boardColumns" :key="colKey(col.id)" class="board-col"
+              :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id), 'col-focus': boardTeamId === col.id }">
+              <div class="board-col-head">
+                <span class="text-weight-bold">{{ col.name }}</span>
+                <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
+                <q-badge color="grey-4" text-color="grey-9" :label="col.workers.length" class="q-ml-xs" />
+              </div>
+              <div class="board-col-body">
+                <div v-for="w in col.workers" :key="w.id" class="wk-chip" :class="{ disabled: !canEdit }"
+                  @pointerdown="startDragWorker($event, w)">
+                  <q-icon name="o_drag_indicator" size="xs" class="opacity-60 q-mr-xs" />
+                  <span class="text-weight-medium">{{ w.full_name }}</span>
+                  <span class="wk-pos">{{ w.position_ko }}</span>
+                </div>
+                <div v-if="!col.workers.length" class="text-grey-5 text-caption q-pa-sm text-center">비어 있음</div>
+              </div>
+            </div>
+          </div>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
 
-    <!-- 어르신 → 조 배정 (호실 기준) -->
+    <!-- drag ghost -->
+    <div v-show="dragging" id="team-drag-ghost" class="drag-ghost"
+      :style="{ left: ghost.x + 'px', top: ghost.y + 'px', display: ghost.show ? 'block' : 'none' }">{{ dragLabel }}</div>
+
+    <!-- 어르신 → 팀 배정 -->
     <q-dialog v-model="showAssignResidents">
       <q-card style="min-width: 480px">
-        <q-card-section class="text-h6">어르신 → 조 배정</q-card-section>
+        <q-card-section class="text-h6">어르신 → 팀 배정</q-card-section>
         <q-card-section class="q-gutter-md">
-          <q-select v-model="assignTeamId" emit-value map-options outlined dense label="대상 조"
+          <q-select v-model="assignTeamId" emit-value map-options outlined dense label="대상 팀"
             :options="teams.map((t) => ({ label: `${t.name} · ${teamTypeLabel[t.team_type]}`, value: t.id }))" />
           <div>
             <div class="text-caption text-grey-7 q-mb-xs">호실 범위 (비우면 전체)</div>
@@ -315,13 +405,14 @@ onMounted(load);
       </q-card>
     </q-dialog>
 
+    <!-- 팀 추가/수정 -->
     <q-dialog v-model="showTeamDialog">
       <q-card style="min-width: 340px">
-        <q-card-section class="text-h6">{{ editingId ? "조 수정" : "조 추가" }}</q-card-section>
+        <q-card-section class="text-h6">{{ editingId ? "팀 수정" : "팀 추가" }}</q-card-section>
         <q-card-section class="q-gutter-md">
-          <q-input v-model="form.name" label="조 이름" outlined dense autofocus hint="예: 요양1팀 · 주간1팀 · 방문1팀" />
+          <q-input v-model="form.name" label="팀 이름" outlined dense autofocus hint="예: 요양1팀 · 주간1팀 · 방문1팀" />
           <q-select v-model="form.team_type" :options="TEAM_TYPE_OPTIONS" label="유형" outlined dense emit-value map-options
-            @update:model-value="onTypeChange" hint="요양=24시간 · 주간=주간만 · 방문=가변" />
+            @update:model-value="onTypeChange" hint="요양=24시간 · 주간=주간만 · 방문=가변(custom)" />
           <div class="row q-gutter-sm">
             <q-input v-model="form.shift_start_hm" label="근무 시작" outlined dense class="col" hint="HH:MM" mask="##:##" />
             <q-input v-model="form.shift_end_hm" label="근무 종료" outlined dense class="col" hint="HH:MM" mask="##:##" />
@@ -348,4 +439,16 @@ onMounted(load);
 .team-bar { height: 6px; }
 .hue-dot { width: 28px; height: 28px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
 .hue-on { border-color: #1976d2; box-shadow: 0 0 0 2px white inset; }
+.hidden { display: none; }
+
+.board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.board-col { flex: 0 0 220px; background: #f7f9fb; border: 1px solid #e3e7ec; border-radius: 8px; display: flex; flex-direction: column; max-height: calc(100vh - 220px); }
+.board-col.col-over { border-color: #1976d2; background: #e8f3ff; }
+.board-col.col-focus { box-shadow: 0 0 0 2px #1976d2 inset; }
+.board-col-head { padding: 8px 10px; border-bottom: 1px solid #e3e7ec; position: sticky; top: 0; background: inherit; }
+.board-col-body { padding: 8px; overflow-y: auto; flex: 1; min-height: 60px; }
+.wk-chip { display: flex; align-items: center; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; cursor: grab; touch-action: none; user-select: none; }
+.wk-chip.disabled { cursor: default; }
+.wk-pos { margin-left: auto; font-size: 11px; color: #8a94a0; }
+.drag-ghost { position: fixed; z-index: 9999; background: #1976d2; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 13px; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,.25); }
 </style>

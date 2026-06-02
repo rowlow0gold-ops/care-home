@@ -31,7 +31,7 @@ const navGroups: NavGroup[] = [
     heading: "직원",
     items: [
       { to: "/staff",    key: "staff",    icon: "o_badge",          label: "직원" },
-      { to: "/teams",    key: "teams",    icon: "o_groups",         label: "조 관리" },
+      { to: "/teams",    key: "teams",    icon: "o_groups",         label: "팀" },
     ],
   },
   {
@@ -40,6 +40,11 @@ const navGroups: NavGroup[] = [
       { to: "/schedule", key: "schedule", icon: "o_calendar_month", label: "스케쥴러" },
       { to: "/chat",      key: "chat",    icon: "o_forum",        label: "채팅" },
       { to: "/leave",     key: "leave",   icon: "o_event_busy",   label: "휴가 승인" },
+    ],
+  },
+  {
+    heading: "업로드",
+    items: [
       { to: "/meal-plan", key: "meals",   icon: "o_restaurant",   label: "식단표" },
       { to: "/reports",   key: "reports", icon: "o_description",  label: "보고서" },
     ],
