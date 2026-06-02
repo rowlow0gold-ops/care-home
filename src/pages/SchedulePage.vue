@@ -630,11 +630,26 @@ function deleteShift(entry: ScheduleEntry) {
   rebuild();
 }
 
-// ── 자동 순환 생성 (auto-rotation) ──────────────────────────────────────────
-// Fills the visible week's empty cells with each 조's shift window, giving every
-// worker one staggered rest day per week. Goes into the draft overlay (저장 전까지
-// 미반영). Only fills empty (worker, date) cells, so it never duplicates.
+// ── 자동 순환 생성 (커버리지 기반) ──────────────────────────────────────────
+// 팀 유형별로 "매일 모든 어르신이 케어"되도록 커버리지를 보장한다.
+//   · 요양(24h): 3교대(07–15 / 15–23 / 23–07), 각 교대를 1:10 기준 인원으로
+//   · 주간: 조의 근무창 1교대, 1:10 기준 인원으로
+//   · 방문: 가변 → 자동 생성 제외(수동)
+// 각 조의 "배정된 인력"만 사용한다(인력 임의 분배 금지). 휴무는 회전으로 자연 발생.
+// 결과는 draft 오버레이에 들어가며(저장 전 미반영) 기존 칸은 건드리지 않는다.
 const generating = ref(false);
+
+function shiftsForTeam(team: Team): { start: string; end: string; hours: number }[] {
+  const mk = (start: string, end: string) => ({ start, end, hours: hoursBetween(start, end) });
+  if (team.team_type === "residential") {
+    return [mk("07:00", "15:00"), mk("15:00", "23:00"), mk("23:00", "07:00")]; // 24h, 8h×3
+  }
+  if (team.team_type === "day") {
+    return [mk(team.shift_start_hm, team.shift_end_hm)]; // 주간 1교대
+  }
+  return []; // visit: 가변, 수동
+}
+
 async function generateRotation() {
   if (!canCreate.value) return;
   if (viewMode.value !== "week") {
@@ -647,68 +662,69 @@ async function generateRotation() {
       $q.notify({ type: "warning", message: "먼저 ‘조 관리’에서 조를 만드세요." });
       return;
     }
+    await loadResidentCounts(); // 1:10 산정을 위한 최신 어르신 수
     const org = await server.orgPaged({ page: 1, page_size: 500 });
     const myBranch = session.me?.branch_id;
     const workers: OrgPerson[] = org.items.filter(
       (u) => !u.is_inactive && ["caregiver", "nurse"].includes(u.role) && (!myBranch || u.branch_id === myBranch),
     );
-    if (!workers.length) {
-      $q.notify({ type: "warning", message: "배정할 돌봄 인력이 없습니다." });
-      return;
-    }
 
-    // team_id → workers. 조를 선택하면 그 조의 배정 인력만, 전체면 각자의 조(없으면
-    // 라운드로빈으로 골고루) 기준으로 묶는다. → 전체에서는 항상 결과가 나온다.
-    const byTeam = new Map<string, OrgPerson[]>();
-    if (selectedTeam.value) {
-      const assigned = workers.filter((w) => w.team_id === selectedTeam.value);
-      if (!assigned.length) {
-        $q.notify({ type: "warning", message: "이 조에 배정된 인력이 없습니다. ‘조 관리’에서 먼저 배정하세요." });
-        return;
-      }
-      byTeam.set(selectedTeam.value, assigned);
-    } else {
-      let rr = 0;
-      for (const w of workers) {
-        const tid = w.team_id && teams.value.some((t) => t.id === w.team_id)
-          ? w.team_id
-          : teams.value[rr++ % teams.value.length].id;
-        if (!byTeam.has(tid)) byTeam.set(tid, []);
-        byTeam.get(tid)!.push(w);
-      }
-    }
+    const targetTeams = selectedTeam.value ? teams.value.filter((t) => t.id === selectedTeam.value) : teams.value;
+    const eldersOf = (tid: string) => activeResidents.value.filter((r) => r.team_id === tid).length;
 
     const existing = new Set(entries.value.map((e) => `${e.staff_id}-${e.shift_date}`));
     const fresh: ScheduleEntry[] = [];
-    for (const [tid, tw] of byTeam) {
-      const team = teams.value.find((t) => t.id === tid)!;
-      const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
-      tw.forEach((w, i) => {
-        weekDates.value.forEach((d, dayIdx) => {
-          // staggered rest day — worker i rests on weekday (i % 7) so the whole
-          // team is never off on the same day.
-          if (tw.length > 1 && i % 7 === dayIdx) return;
-          const ds = localDateStr(d);
-          const key = `${w.id}-${ds}`;
-          if (existing.has(key)) return;
-          existing.add(key);
-          fresh.push({
-            id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
-            shift_start: team.shift_start_hm, shift_end: team.shift_end_hm,
-            shift_hours: hrs, notes: `${team.name} 자동`,
-          });
-        });
-      });
+    const noWorkers: string[] = [];
+    let understaffed = false;
+
+    for (const team of targetTeams) {
+      const shifts = shiftsForTeam(team);
+      if (!shifts.length) continue;            // 방문: 수동
+      const elders = eldersOf(team.id);
+      if (elders === 0) continue;              // 담당 어르신 없음 → 인력 불필요
+      const required = Math.max(1, Math.ceil(elders / 10)); // 교대당 1:10
+      const W = workers.filter((w) => w.team_id === team.id);
+      if (!W.length) { noWorkers.push(team.name); continue; }
+
+      let ptr = 0; // 주 전체에 걸쳐 회전 → 요일·주야 교대 + 휴무가 자연 발생
+      for (const d of weekDates.value) {
+        const ds = localDateStr(d);
+        const usedToday = new Set<string>();   // 하루 1교대만
+        for (const shift of shifts) {
+          let filled = 0, attempts = 0;
+          while (filled < required && attempts < W.length) {
+            const w = W[ptr % W.length]; ptr++; attempts++;
+            if (usedToday.has(w.id)) continue;
+            if (existing.has(`${w.id}-${ds}`)) { usedToday.add(w.id); continue; }
+            usedToday.add(w.id);
+            existing.add(`${w.id}-${ds}`);
+            fresh.push({
+              id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
+              shift_start: shift.start, shift_end: shift.end, shift_hours: shift.hours,
+              notes: `${team.name} 자동`,
+            });
+            filled++;
+          }
+          if (filled < required) understaffed = true; // 인력 부족 → 인력 알림이 공백/비율로 표시
+        }
+      }
     }
+
+    const missTxt = noWorkers.length ? ` · 인력 미배정: ${[...new Set(noWorkers)].join(", ")}` : "";
     if (!fresh.length) {
-      $q.notify({ type: "info", message: "생성할 빈 칸이 없습니다. (이미 채워져 있습니다)" });
+      $q.notify({
+        type: "warning",
+        message: noWorkers.length
+          ? `생성된 근무가 없습니다.${missTxt} (조 관리에서 인력을 배정하세요)`
+          : "생성할 근무가 없습니다. (담당 어르신·조 유형을 확인하세요)",
+      });
       return;
     }
     pendingCreates.value = [...pendingCreates.value, ...fresh];
-    // 생성한 인력이 그리드에 행으로 보이도록 staffList 갱신.
-    if (!selectedTeam.value) await loadStaffList();
+    if (!selectedTeam.value) await loadStaffList(); // 생성 인력이 행으로 보이도록
     rebuild();
-    $q.notify({ type: "positive", message: `${fresh.length}건을 생성했습니다. 확인 후 저장하세요.` });
+    const shortTxt = understaffed ? " · 일부 교대 인원 부족" : "";
+    $q.notify({ type: "positive", message: `${fresh.length}건 생성 (1:10 커버리지)${missTxt}${shortTxt}. 확인 후 저장하세요.` });
   } catch (e: any) {
     $q.notify({ type: "negative", message: `자동 생성 실패: ${e?.message ?? e}` });
   } finally {
@@ -803,7 +819,7 @@ const showAlerts = ref(true);
       <!-- Draft controls -->
       <div v-if="canCreate" class="col-auto q-gutter-xs">
         <q-btn v-if="viewMode === 'week'" outline color="primary" icon="o_auto_awesome" label="자동 생성" dense :loading="generating" @click="generateRotation">
-          <q-tooltip>선택한 조(또는 전체)의 근무를 이번 주에 순환 배정합니다. 휴무는 하루씩 교대됩니다.</q-tooltip>
+          <q-tooltip>조 유형별 커버리지로 이번 주 근무를 생성합니다. 요양=24시간 3교대, 주간=1교대, 각 교대를 어르신 1:10 기준 인원으로 채웁니다(방문은 수동).</q-tooltip>
         </q-btn>
         <q-btn color="primary" icon="o_save" label="저장" unelevated dense :disable="!dirty" :loading="saving" @click="saveDraft" />
         <q-btn outline color="grey-8" icon="o_undo" label="되돌리기" dense :disable="!dirty" @click="rollbackDraft" />
