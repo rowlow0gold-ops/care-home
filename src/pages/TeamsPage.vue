@@ -188,6 +188,26 @@ const dragLabel = ref("");
 const overCol = ref<string>("");
 const ghost = ref({ x: 0, y: 0, show: false });
 
+// 드래그 중 좌/우 가장자리에서 보드 가로 스크롤 자동 이동.
+const lastPt = { x: 0, y: 0 };
+let scrollRAF = 0;
+function trackPt(e: PointerEvent) { lastPt.x = e.clientX; lastPt.y = e.clientY; }
+function autoScrollTick() {
+  if (!dragging.value && !teamDragging.value) { scrollRAF = 0; return; }
+  const g = document.getElementById("team-drag-ghost");
+  if (g) g.style.display = "none";
+  const board = document.elementFromPoint(lastPt.x, lastPt.y)?.closest(".board") as HTMLElement | null;
+  if (g) g.style.display = "";
+  if (board && board.scrollWidth > board.clientWidth) {
+    const r = board.getBoundingClientRect();
+    const EDGE = 80;
+    if (lastPt.x < r.left + EDGE) board.scrollLeft -= Math.max(6, (EDGE - (lastPt.x - r.left)) * 0.4);
+    else if (lastPt.x > r.right - EDGE) board.scrollLeft += Math.max(6, (EDGE - (r.right - lastPt.x)) * 0.4);
+  }
+  scrollRAF = requestAnimationFrame(autoScrollTick);
+}
+function startAutoScroll() { if (!scrollRAF) scrollRAF = requestAnimationFrame(autoScrollTick); }
+
 function colKey(id: string | null) { return id ?? "__none__"; }
 function colUnder(x: number, y: number): string | null {
   const g = document.getElementById("team-drag-ghost");
@@ -204,10 +224,13 @@ function startDrag(e: PointerEvent, kind: DragKind, id: string, label: string) {
   dragLabel.value = label;
   dragging.value = true;
   ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
+  trackPt(e);
+  startAutoScroll();
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
 }
 function onMove(e: PointerEvent) {
+  trackPt(e);
   ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
   overCol.value = colUnder(e.clientX, e.clientY) ?? "";
 }
@@ -279,8 +302,10 @@ function beginTeamDrag(id: string) {
   teamDragging.value = true;
   dragLabel.value = teams.value.find((t) => t.id === id)?.name ?? "";
   lastOrigOrder = teams.value.map((t) => t.id);
+  startAutoScroll();
 }
 function moveGhost(e: PointerEvent) {
+  trackPt(e);
   ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
 }
 // 카드 전체 드래그 (임계값으로 클릭과 구분)
