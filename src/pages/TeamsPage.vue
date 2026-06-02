@@ -451,7 +451,7 @@ onMounted(load);
 </script>
 
 <template>
-  <q-page class="q-pa-lg">
+  <q-page class="q-pa-lg" :class="{ 'no-select': dragging || teamDragging }">
     <div class="row items-center q-mb-sm q-gutter-sm">
       <div class="text-h5 text-weight-bold col">팀</div>
       <q-btn outline color="primary" icon="o_download" label="엑셀 내보내기" @click="exportAssignments" />
@@ -673,7 +673,8 @@ onMounted(load);
 </template>
 
 <style scoped>
-.team-card { overflow: hidden; transition: opacity .12s, box-shadow .12s; user-select: none; }
+.no-select, .no-select * { -webkit-user-select: none !important; user-select: none !important; }
+.team-card { overflow: hidden; transition: opacity .12s, box-shadow .12s; -webkit-user-select: none; user-select: none; }
 .team-card.team-grab { cursor: grab; }
 .team-card.team-grab:active { cursor: grabbing; }
 .team-card.team-over { box-shadow: 0 0 0 2px #1976d2 inset; }
@@ -691,7 +692,7 @@ onMounted(load);
 .board-col.col-focus { box-shadow: 0 0 0 2px #1976d2 inset; }
 .board-col-head { padding: 8px 10px; border-bottom: 1px solid #e3e7ec; position: sticky; top: 0; background: inherit; }
 .board-col-body { padding: 8px; overflow-y: auto; flex: 1; min-height: 60px; }
-.wk-chip { display: flex; align-items: center; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; cursor: grab; touch-action: none; user-select: none; }
+.wk-chip { display: flex; align-items: center; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
 .wk-chip.disabled { cursor: default; }
 .wk-pos { margin-left: auto; font-size: 11px; color: #8a94a0; }
 .drag-ghost { position: fixed; z-index: 9999; background: #1976d2; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 13px; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,.25); }
