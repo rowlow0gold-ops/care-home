@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useQuasar } from "quasar";
-import { invoke } from "@tauri-apps/api/core";
-import * as XLSX from "xlsx";
 import { server, type Team, type OrgPerson, type Resident } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
@@ -29,7 +27,6 @@ const TYPE_DEFAULT_SHIFT: Record<string, { start: string; end: string }> = {
   day: { start: "09:00", end: "18:00" },
   visit: { start: "09:00", end: "13:00" },
 };
-const roleKo: Record<string, string> = { caregiver: "요양보호사", nurse: "간호사", branch_manager: "시설장", hq: "본사" };
 
 // 근무 표기: 요양=24시간, 방문=custom, 그 외=시간창
 function shiftText(t: Team): string {
@@ -163,52 +160,6 @@ async function onUp(e: PointerEvent) {
   const w = staff.value.find((s) => s.id === id);
   if (!w || effectiveTeam(w) === target) return;
   stageAssign(w, target);                       // 드래프트에 반영 (저장 시 실제 반영)
-}
-
-// ── 엑셀 내보내기 / 가져오기 (팀 배정) ───────────────────────────────────────
-function exportAssignments() {
-  const rows = caregivers.value.map((w) => ({
-    user_id: w.id, 이름: w.full_name, 직책: w.position_ko, 구분: roleKo[w.role] ?? w.role, 팀: w.team_name ?? "",
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "팀배정");
-  const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
-  invoke<string | null>("save_excel", { filename: "팀배정.xlsx", data: Array.from(new Uint8Array(out)) })
-    .then((p) => { if (p) $q.notify({ type: "positive", message: "팀 배정을 내보냈습니다." }); })
-    .catch((e) => $q.notify({ type: "negative", message: `내보내기 실패: ${e}` }));
-}
-const fileInput = ref<HTMLInputElement | null>(null);
-const importing = ref(false);
-function triggerImport() { fileInput.value?.click(); }
-async function onImportFile(e: Event) {
-  const f = (e.target as HTMLInputElement).files?.[0];
-  if (!f) return;
-  importing.value = true;
-  try {
-    const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]) as any[];
-    const teamByName = new Map(teams.value.map((t) => [t.name, t.id]));
-    let n = 0;
-    for (const r of rows) {
-      const id = String(r.user_id ?? "").trim();
-      if (!id) continue;
-      const tn = String(r["팀"] ?? "").trim();
-      const tid = tn ? teamByName.get(tn) : null; // 빈 칸 → 미배정
-      if (tid === undefined) continue;             // 모르는 팀 이름 → 건너뜀
-      const w = staff.value.find((s) => s.id === id);
-      if (!w || effectiveTeam(w) === (tid ?? null)) continue;
-      stageAssign(w, tid ?? null);                 // 드래프트에 반영
-      n++;
-    }
-    if (!showBoard.value) showBoard.value = true;  // 보드를 열어 검토 후 저장
-    $q.notify({ type: "positive", message: `${n}명 임시 반영 — 검토 후 ‘저장’을 누르세요.` });
-  } catch (err: any) {
-    $q.notify({ type: "negative", message: `가져오기 실패: ${err?.message ?? err}` });
-  } finally {
-    importing.value = false;
-    (e.target as HTMLInputElement).value = "";
-  }
 }
 
 // ── 어르신 → 팀 배정 (호실 기준 일괄) ────────────────────────────────────────
@@ -364,9 +315,6 @@ onMounted(load);
           <q-space />
           <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirty" :loading="savingBoard" @click="saveBoard" />
           <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!dirty" @click="revertBoard" />
-          <q-btn outline dense color="primary" icon="o_download" label="엑셀 내보내기" @click="exportAssignments" />
-          <q-btn v-if="canEdit" outline dense color="primary" icon="o_upload" label="엑셀 가져오기" :loading="importing" @click="triggerImport" />
-          <input ref="fileInput" type="file" accept=".xlsx,.xls" class="hidden" @change="onImportFile" />
           <q-btn flat round dense icon="o_close" v-close-popup />
         </q-card-section>
         <q-separator />
