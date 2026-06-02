@@ -14,6 +14,10 @@ const id = computed(() => String(route.params.id));
 const canEdit = computed(() => session.canEdit);
 const canDelete = computed(() => session.canDelete);
 
+// 어디서 들어왔는지에 따라 뒤로가기 목적지를 정한다 (휴가 탭에서 왔으면 휴가로).
+const backTo = computed(() => (route.query.from === "leave" ? "/leave" : "/staff"));
+const backLabel = computed(() => (route.query.from === "leave" ? "휴가" : "직원 목록"));
+
 const person = ref<OrgPerson | null>(null);
 const loading = ref(false);
 
@@ -91,7 +95,7 @@ function confirmDeactivate() {
     try {
       await server.deactivateStaff(person.value!.id);
       $q.notify({ type: "positive", message: "비활성화되었습니다." });
-      router.push("/staff");
+      router.push(backTo.value);
     } catch (e: any) { $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` }); }
   });
 }
@@ -101,7 +105,7 @@ onMounted(load);
 
 <template>
   <q-page class="q-pa-lg">
-    <q-btn flat dense icon="o_arrow_back" label="직원 목록" class="q-mb-sm text-grey-7" @click="router.push('/staff')" />
+    <q-btn flat dense icon="o_arrow_back" :label="backLabel" class="q-mb-sm text-grey-7" @click="router.push(backTo)" />
 
     <q-card flat bordered>
       <q-card-section class="row items-center q-gutter-md">

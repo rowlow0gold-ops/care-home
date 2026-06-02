@@ -21,7 +21,7 @@ const chatConvName = ref<string | null>(null);
 const chatKey = ref(0);
 
 function openDetail(r: Row) {
-  router.push(`/staff/${r.user_id}`);
+  router.push({ path: `/staff/${r.user_id}`, query: { from: "leave" } });
 }
 async function startChat(r: Row) {
   try {
