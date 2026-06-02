@@ -108,11 +108,34 @@ function revertBoard() {
   $q.notify({ type: "info", message: "변경을 되돌렸습니다." });
 }
 
+const unassignedQuery = ref(""); // 미배정 영역 검색
 interface BoardCol { id: string | null; name: string; type: string | null; workers: OrgPerson[] }
-const boardColumns = computed<BoardCol[]>(() => [
-  { id: null, name: "미배정", type: null, workers: caregivers.value.filter((w) => effectiveTeam(w) === null) },
-  ...teams.value.map((t) => ({ id: t.id, name: t.name, type: t.team_type, workers: caregivers.value.filter((w) => effectiveTeam(w) === t.id) })),
-]);
+const boardColumns = computed<BoardCol[]>(() => {
+  const q = unassignedQuery.value.trim().toLowerCase();
+  return [
+    {
+      id: null, name: "미배정", type: null,
+      workers: caregivers.value.filter((w) =>
+        effectiveTeam(w) === null && (!q || w.full_name.toLowerCase().includes(q) || (w.position_ko ?? "").toLowerCase().includes(q))),
+    },
+    ...teams.value.map((t) => ({ id: t.id, name: t.name, type: t.team_type, workers: caregivers.value.filter((w) => effectiveTeam(w) === t.id) })),
+  ];
+});
+
+// 엑셀 내보내기 (팀 배정)
+function exportAssignments() {
+  import("xlsx").then(async (XLSX) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const rows = caregivers.value.map((w) => ({ user_id: w.id, 이름: w.full_name, 직책: w.position_ko, 팀: w.team_name ?? "" }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "팀배정");
+    const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+    invoke<string | null>("save_excel", { filename: "팀배정.xlsx", data: Array.from(new Uint8Array(out)) })
+      .then((p) => { if (p) $q.notify({ type: "positive", message: "팀 배정을 내보냈습니다." }); })
+      .catch((e) => $q.notify({ type: "negative", message: `내보내기 실패: ${e}` }));
+  });
+}
 function openBoard(t: Team) {
   boardTeamId.value = t.id;
   showBoard.value = true;
@@ -269,7 +292,7 @@ onMounted(load);
         <div class="text-h5 text-weight-bold">팀</div>
         <div class="text-caption text-grey-6">팀 카드를 눌러 인력을 드래그로 배치하고, 각 팀이 담당할 어르신을 배정합니다</div>
       </div>
-      <q-btn v-if="canEdit" outline color="primary" icon="o_elderly" label="어르신 배정" @click="openAssignResidents" />
+      <q-btn outline color="primary" icon="o_download" label="엑셀 내보내기" @click="exportAssignments" />
       <q-btn v-if="canEdit" unelevated color="primary" icon="o_add" label="팀 추가" @click="openNew" />
       <q-btn flat round dense icon="o_refresh" :loading="loading" @click="load" />
     </div>
@@ -313,6 +336,7 @@ onMounted(load);
           <div class="text-h6">인력 배치 — 드래그로 팀 이동</div>
           <q-badge v-if="dirty" color="orange" :label="`미저장 ${pendingCount}`" />
           <q-space />
+          <q-btn v-if="canEdit" outline dense color="primary" icon="o_elderly" label="어르신 배정" @click="openAssignResidents" />
           <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirty" :loading="savingBoard" @click="saveBoard" />
           <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!dirty" @click="revertBoard" />
           <q-btn flat round dense icon="o_close" v-close-popup />
@@ -329,6 +353,10 @@ onMounted(load);
                 <span class="text-weight-bold">{{ col.name }}</span>
                 <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
                 <q-badge color="grey-4" text-color="grey-9" :label="col.workers.length" class="q-ml-xs" />
+                <q-input v-if="col.id === null" v-model="unassignedQuery" dense outlined clearable
+                  placeholder="이름 검색" class="q-mt-xs" @pointerdown.stop>
+                  <template #prepend><q-icon name="search" size="xs" /></template>
+                </q-input>
               </div>
               <div class="board-col-body">
                 <div v-for="w in col.workers" :key="w.id" class="wk-chip" :class="{ disabled: !canEdit }"
