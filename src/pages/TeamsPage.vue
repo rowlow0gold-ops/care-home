@@ -276,7 +276,7 @@ async function onTeamUp(e: PointerEvent) {
   teams.value = arr; // 낙관적 반영
   reordering.value = true;
   try {
-    await Promise.all(arr.map((t, i) => (t.sort_order === i + 1 ? null : server.updateTeam(t.id, { sort_order: i + 1 }))));
+    await Promise.all(arr.map((t, i) => (t.sort_order === i + 1 ? null : server.updateTeam(t.id, { name: t.name, sort_order: i + 1 }))));
     await load();
   } catch (err: any) {
     $q.notify({ type: "negative", message: `순서 변경 실패: ${err?.message ?? err}` });
