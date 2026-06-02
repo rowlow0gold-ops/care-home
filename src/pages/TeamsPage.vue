@@ -142,7 +142,10 @@ function openBoard(t: Team) {
 }
 
 // pointer 기반 드래그 (WKWebView 에서 HTML5 DnD 불안정 → pointer 사용)
+// 인력(worker)·어르신(resident) 보드가 같은 드래그 머신을 공유한다.
+type DragKind = "worker" | "resident";
 let dragId: string | null = null;
+let dragKind: DragKind | null = null;
 const dragging = ref(false);
 const dragLabel = ref("");
 const overCol = ref<string>("");
@@ -156,11 +159,12 @@ function colUnder(x: number, y: number): string | null {
   if (g) g.style.display = "";
   return el ? (el.dataset.colId ?? null) : null;
 }
-function startDragWorker(e: PointerEvent, w: OrgPerson) {
+function startDrag(e: PointerEvent, kind: DragKind, id: string, label: string) {
   if (!canEdit.value) return;
   e.preventDefault();
-  dragId = w.id;
-  dragLabel.value = w.full_name;
+  dragKind = kind;
+  dragId = id;
+  dragLabel.value = label;
   dragging.value = true;
   ghost.value = { x: e.clientX + 12, y: e.clientY - 10, show: true };
   window.addEventListener("pointermove", onMove);
@@ -177,59 +181,69 @@ async function onUp(e: PointerEvent) {
   dragging.value = false;
   const over = colUnder(e.clientX, e.clientY);
   overCol.value = "";
-  const id = dragId; dragId = null;
+  const id = dragId; const kind = dragKind;
+  dragId = null; dragKind = null;
   if (!id || over === null) return;            // 컬럼 밖에 드롭
   const target = over === "__none__" ? null : over;
-  const w = staff.value.find((s) => s.id === id);
-  if (!w || effectiveTeam(w) === target) return;
-  stageAssign(w, target);                       // 드래프트에 반영 (저장 시 실제 반영)
+  if (kind === "worker") {
+    const w = staff.value.find((s) => s.id === id);
+    if (w && effectiveTeam(w) !== target) stageAssign(w, target);
+  } else {
+    const r = residents.value.find((s) => s.id === id);
+    if (r && effectiveResTeam(r) !== target) stageAssignRes(r, target);
+  }
 }
 
-// ── 어르신 → 팀 배정 (호실 기준 일괄) ────────────────────────────────────────
-const showAssignResidents = ref(false);
-const assignTeamId = ref<string | null>(null);
-const roomFrom = ref("");
-const roomTo = ref("");
-const unassignedOnly = ref(false);
-const assigningResidents = ref(false);
-const assignTargetTeam = computed(() => teams.value.find((t) => t.id === assignTeamId.value) ?? null);
-const matchedResidents = computed<Resident[]>(() => {
-  const team = assignTargetTeam.value;
-  if (!team) return [];
-  const from = roomFrom.value.trim() ? Number(roomFrom.value) : null;
-  const to = roomTo.value.trim() ? Number(roomTo.value) : null;
-  return residents.value.filter((r) => {
-    if (r.status !== "active") return false;
-    if (r.branch_id !== team.branch_id) return false;
-    if (unassignedOnly.value && r.team_id) return false;
-    if (from !== null || to !== null) {
-      const n = Number(r.room_number);
-      if (Number.isNaN(n)) return false;
-      if (from !== null && n < from) return false;
-      if (to !== null && n > to) return false;
-    }
-    return true;
-  });
-});
-function openAssignResidents() {
-  assignTeamId.value = teams.value[0]?.id ?? null;
-  roomFrom.value = ""; roomTo.value = ""; unassignedOnly.value = false;
-  showAssignResidents.value = true;
+// ── 어르신 배정 보드 (인력 배치와 동일한 드래그 보드) ────────────────────────
+const showResBoard = ref(false);
+const pendingRes = ref(new Map<string, string | null>());
+const dirtyRes = computed(() => pendingRes.value.size > 0);
+const pendingResCount = computed(() => pendingRes.value.size);
+const savingResBoard = ref(false);
+const resQuery = ref("");
+function effectiveResTeam(r: Resident): string | null {
+  return pendingRes.value.has(r.id) ? (pendingRes.value.get(r.id) ?? null) : (r.team_id ?? null);
 }
-async function assignResidents() {
-  const team = assignTargetTeam.value;
-  const list = matchedResidents.value;
-  if (!team || !list.length) return;
-  assigningResidents.value = true;
+function stageAssignRes(r: Resident, target: string | null) {
+  const orig = r.team_id ?? null;
+  if (orig === target) pendingRes.value.delete(r.id);
+  else pendingRes.value.set(r.id, target);
+  pendingRes.value = new Map(pendingRes.value);
+}
+const activeResidentsBranch = computed(() =>
+  residents.value.filter((r) => r.status === "active" && (!myBranch.value || r.branch_id === myBranch.value)),
+);
+interface ResCol { id: string | null; name: string; type: string | null; residents: Resident[] }
+const residentBoardColumns = computed<ResCol[]>(() => {
+  const q = resQuery.value.trim().toLowerCase();
+  return [
+    {
+      id: null, name: "미배정", type: null,
+      residents: activeResidentsBranch.value.filter((r) =>
+        effectiveResTeam(r) === null && (!q || r.full_name.toLowerCase().includes(q) || (r.room_number ?? "").toLowerCase().includes(q))),
+    },
+    ...teams.value.map((t) => ({ id: t.id, name: t.name, type: t.team_type, residents: activeResidentsBranch.value.filter((r) => effectiveResTeam(r) === t.id) })),
+  ];
+});
+function openResidentBoard() { showResBoard.value = true; }
+function revertResBoard() {
+  if (!pendingRes.value.size) return;
+  pendingRes.value = new Map();
+  $q.notify({ type: "info", message: "변경을 되돌렸습니다." });
+}
+async function saveResBoard() {
+  if (!pendingRes.value.size) return;
+  savingResBoard.value = true;
   try {
-    for (const r of list) await server.assignResidentTeam(r.id, team.id);
-    $q.notify({ type: "positive", message: `${list.length}명을 ${team.name}에 배정했습니다.` });
-    showAssignResidents.value = false;
+    for (const [id, tid] of pendingRes.value) await server.assignResidentTeam(id, tid);
+    const n = pendingRes.value.size;
+    pendingRes.value = new Map();
     await load();
+    $q.notify({ type: "positive", message: `어르신 ${n}명 배정을 저장했습니다.` });
   } catch (e: any) {
-    $q.notify({ type: "negative", message: `배정 실패: ${e?.message ?? e}` });
+    $q.notify({ type: "negative", message: `저장 실패: ${e?.message ?? e}` });
   } finally {
-    assigningResidents.value = false;
+    savingResBoard.value = false;
   }
 }
 
@@ -336,7 +350,7 @@ onMounted(load);
           <div class="text-h6">인력 배치 — 드래그로 팀 이동</div>
           <q-badge v-if="dirty" color="orange" :label="`미저장 ${pendingCount}`" />
           <q-space />
-          <q-btn v-if="canEdit" outline dense color="primary" icon="o_elderly" label="어르신 배정" @click="openAssignResidents" />
+          <q-btn v-if="canEdit" outline dense color="primary" icon="o_elderly" label="어르신 배정" @click="openResidentBoard" />
           <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirty" :loading="savingBoard" @click="saveBoard" />
           <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!dirty" @click="revertBoard" />
           <q-btn flat round dense icon="o_close" v-close-popup />
@@ -360,7 +374,7 @@ onMounted(load);
               </div>
               <div class="board-col-body">
                 <div v-for="w in col.workers" :key="w.id" class="wk-chip" :class="{ disabled: !canEdit }"
-                  @pointerdown="startDragWorker($event, w)">
+                  @pointerdown="startDrag($event, 'worker', w.id, w.full_name)">
                   <q-icon name="o_drag_indicator" size="xs" class="opacity-60 q-mr-xs" />
                   <span class="text-weight-medium">{{ w.full_name }}</span>
                   <span class="wk-pos">{{ w.position_ko }}</span>
@@ -377,36 +391,46 @@ onMounted(load);
     <div v-show="dragging" id="team-drag-ghost" class="drag-ghost"
       :style="{ left: ghost.x + 'px', top: ghost.y + 'px', display: ghost.show ? 'block' : 'none' }">{{ dragLabel }}</div>
 
-    <!-- 어르신 → 팀 배정 -->
-    <q-dialog v-model="showAssignResidents">
-      <q-card style="min-width: 480px">
-        <q-card-section class="text-h6">어르신 → 팀 배정</q-card-section>
-        <q-card-section class="q-gutter-md">
-          <q-select v-model="assignTeamId" emit-value map-options outlined dense label="대상 팀"
-            :options="teams.map((t) => ({ label: `${t.name} · ${teamTypeLabel[t.team_type]}`, value: t.id }))" />
-          <div>
-            <div class="text-caption text-grey-7 q-mb-xs">호실 범위 (비우면 전체)</div>
-            <div class="row q-gutter-sm">
-              <q-input v-model="roomFrom" label="시작" type="number" outlined dense class="col" />
-              <q-input v-model="roomTo" label="끝" type="number" outlined dense class="col" />
+    <!-- 어르신 배치 보드 (인력 배치와 동일한 드래그 보드) -->
+    <q-dialog v-model="showResBoard" maximized>
+      <q-card>
+        <q-card-section class="row items-center q-gutter-sm">
+          <div class="text-h6">어르신 배치 — 드래그로 팀 배정</div>
+          <q-badge v-if="dirtyRes" color="orange" :label="`미저장 ${pendingResCount}`" />
+          <q-space />
+          <q-btn v-if="canEdit" unelevated dense color="primary" icon="o_save" label="저장" :disable="!dirtyRes" :loading="savingResBoard" @click="saveResBoard" />
+          <q-btn v-if="canEdit" outline dense color="grey-8" icon="o_undo" label="되돌리기" :disable="!dirtyRes" @click="revertResBoard" />
+          <q-btn flat round dense icon="o_close" v-close-popup />
+        </q-card-section>
+        <q-separator />
+        <q-card-section>
+          <div class="text-caption text-grey-6 q-mb-sm">
+            <q-icon name="o_drag_indicator" size="xs" /> 어르신 칩을 담당 팀(또는 미배정)으로 드래그하세요.
+          </div>
+          <div class="board">
+            <div v-for="col in residentBoardColumns" :key="colKey(col.id)" class="board-col"
+              :data-col-id="colKey(col.id)" :class="{ 'col-over': overCol === colKey(col.id) }">
+              <div class="board-col-head">
+                <span class="text-weight-bold">{{ col.name }}</span>
+                <q-badge v-if="col.type" :color="teamTypeColor[col.type] ?? 'grey'" :label="teamTypeLabel[col.type]" class="q-ml-xs" />
+                <q-badge color="grey-4" text-color="grey-9" :label="col.residents.length" class="q-ml-xs" />
+                <q-input v-if="col.id === null" v-model="resQuery" dense outlined clearable
+                  placeholder="이름·호실 검색" class="q-mt-xs" @pointerdown.stop>
+                  <template #prepend><q-icon name="search" size="xs" /></template>
+                </q-input>
+              </div>
+              <div class="board-col-body">
+                <div v-for="r in col.residents" :key="r.id" class="wk-chip" :class="{ disabled: !canEdit }"
+                  @pointerdown="startDrag($event, 'resident', r.id, r.full_name)">
+                  <q-icon name="o_drag_indicator" size="xs" class="opacity-60 q-mr-xs" />
+                  <span class="text-weight-medium">{{ r.full_name }}</span>
+                  <span class="wk-pos">{{ r.room_number ?? "—" }}호</span>
+                </div>
+                <div v-if="!col.residents.length" class="text-grey-5 text-caption q-pa-sm text-center">비어 있음</div>
+              </div>
             </div>
           </div>
-          <q-toggle v-model="unassignedOnly" label="미배정 어르신만" dense />
-          <q-banner dense class="bg-blue-1 text-blue-9 rounded-borders">
-            <q-icon name="o_groups" class="q-mr-xs" />{{ matchedResidents.length }}명이 배정됩니다.
-          </q-banner>
-          <q-list v-if="matchedResidents.length" bordered dense class="rounded-borders" style="max-height: 200px; overflow:auto">
-            <q-item v-for="r in matchedResidents.slice(0, 100)" :key="r.id">
-              <q-item-section>{{ r.full_name }}</q-item-section>
-              <q-item-section side class="text-grey-7">{{ r.room_number ?? "—" }}호 · {{ r.team_name ?? "미배정" }}</q-item-section>
-            </q-item>
-          </q-list>
         </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="취소" v-close-popup />
-          <q-btn unelevated color="primary" :label="`${matchedResidents.length}명 배정`"
-            :disable="!matchedResidents.length" :loading="assigningResidents" @click="assignResidents" />
-        </q-card-actions>
       </q-card>
     </q-dialog>
 
