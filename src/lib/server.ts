@@ -496,6 +496,9 @@ export const server = {
   conversations() {
     return fetchJson<ConversationSummary[]>("/api/v1/chat/conversations");
   },
+  chatContacts() {
+    return fetchJson<ChatContact[]>("/api/v1/chat/contacts");
+  },
   createConversation(payload: { title?: string | null; invitee_id?: string | null }) {
     return fetchJson<ConversationSummary>("/api/v1/chat/conversations", {
       method: "POST",
@@ -839,6 +842,15 @@ export interface ChatInvite {
   invited_by: string;
   invited_by_name: string;
   requested_at: string;
+}
+
+export interface ChatContact {
+  id: string;
+  full_name: string;
+  role: string;
+  position: string;
+  branch_id: string | null;
+  branch_name: string | null;
 }
 
 export type { MeUser };

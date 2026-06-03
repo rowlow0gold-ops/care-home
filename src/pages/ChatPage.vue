@@ -3,8 +3,17 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { useQuasar } from "quasar";
 import {
-  server, type ConversationSummary, type ChatMessage, type ChatInvite, type OrgPerson,
+  server, type ConversationSummary, type ChatMessage, type ChatInvite, type ChatContact,
 } from "@/lib/server";
+
+const POSITION_KO: Record<string, string> = {
+  ceo: "대표", coo: "운영총괄", cfo: "재무이사", hr_director: "인사이사", quality_director: "품질이사",
+  branch_manager: "시설장", office_manager: "행정", receptionist: "접수", social_worker: "사회복지사",
+  nurse_rn: "간호사", nurse_assistant: "간호조무사", dietitian: "영양사",
+  physical_therapist: "물리치료사", occupational_therapist: "작업치료사", caregiver: "요양보호사",
+  cook: "조리원", cleaner: "환경미화원", driver: "운전기사", doctor_visiting: "촉탁의", it: "IT", other: "기타",
+};
+function posKo(p: string) { return POSITION_KO[p] ?? p; }
 import { useServerSessionStore } from "@/stores/server-session";
 
 const props = defineProps<{ initialConvId?: string | null; initialConvName?: string | null }>();
@@ -152,21 +161,21 @@ async function scrollBottom() {
 }
 
 // ── 상대 검색 (인라인) → 이름으로 검색해 바로 대화 시작 ──────────────────────
-const people = ref<OrgPerson[]>([]);
+const people = ref<ChatContact[]>([]);
 const peopleQuery = ref("");
-const peopleResults = computed<OrgPerson[]>(() => {
+const peopleResults = computed<ChatContact[]>(() => {
   const q = peopleQuery.value.trim().toLowerCase();
   if (!q) return [];
   return people.value
-    .filter((p) => !p.is_inactive && p.id !== myId.value)
-    .filter((p) => p.full_name.toLowerCase().includes(q) || (p.position_ko ?? "").toLowerCase().includes(q))
+    .filter((p) => p.id !== myId.value)
+    .filter((p) => p.full_name.toLowerCase().includes(q) || posKo(p.position).toLowerCase().includes(q))
     .slice(0, 50);
 });
 async function loadPeople() {
   if (people.value.length) return;
-  try { people.value = (await server.orgPaged({ page: 1, page_size: 500 })).items; } catch { /* */ }
+  try { people.value = await server.chatContacts(); } catch { /* */ }
 }
-async function startChatWith(p: OrgPerson) {
+async function startChatWith(p: ChatContact) {
   try {
     const c = await server.createConversation({ invitee_id: p.id });
     localNames.value[c.id] = p.full_name;
@@ -218,7 +227,7 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
             </q-item-section>
             <q-item-section>
               <q-item-label class="text-weight-medium">{{ p.full_name }}</q-item-label>
-              <q-item-label caption>{{ p.position_ko }}</q-item-label>
+              <q-item-label caption>{{ posKo(p.position) }}<span v-if="p.branch_name"> · {{ p.branch_name }}</span></q-item-label>
             </q-item-section>
             <q-item-section side><q-icon name="o_chat" color="primary" /></q-item-section>
           </q-item>
