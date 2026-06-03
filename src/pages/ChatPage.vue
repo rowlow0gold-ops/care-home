@@ -144,47 +144,37 @@ async function scrollBottom() {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
-// ── new conversation (상대 검색 후 대화 시작) ────────────────────────────────
-const showNew = ref(false);
+// ── 상대 검색 (인라인) → 이름으로 검색해 바로 대화 시작 ──────────────────────
 const people = ref<OrgPerson[]>([]);
 const peopleQuery = ref("");
-const newInvitee = ref<string | null>(null);
-const peopleOptions = computed(() => {
+const peopleResults = computed<OrgPerson[]>(() => {
   const q = peopleQuery.value.trim().toLowerCase();
+  if (!q) return [];
   return people.value
     .filter((p) => !p.is_inactive && p.id !== myId.value)
-    .filter((p) => !q || p.full_name.toLowerCase().includes(q) || (p.position_ko ?? "").toLowerCase().includes(q))
-    .map((p) => ({ label: `${p.full_name} · ${p.position_ko}`, value: p.id }));
+    .filter((p) => p.full_name.toLowerCase().includes(q) || (p.position_ko ?? "").toLowerCase().includes(q))
+    .slice(0, 50);
 });
-function onPeopleFilter(val: string, update: (fn: () => void) => void) {
-  update(() => { peopleQuery.value = val; });
+async function loadPeople() {
+  if (people.value.length) return;
+  try { people.value = (await server.orgPaged({ page: 1, page_size: 500 })).items; } catch { /* */ }
 }
-
-async function openNew() {
-  newInvitee.value = null;
-  peopleQuery.value = "";
-  showNew.value = true;
-  if (!people.value.length) {
-    try { people.value = (await server.orgPaged({ page: 1, page_size: 500 })).items; } catch { /* */ }
-  }
-}
-async function createConv() {
-  if (!newInvitee.value) { $q.notify({ type: "negative", message: "대화할 상대를 선택하세요." }); return; }
+async function startChatWith(p: OrgPerson) {
   try {
-    const c = await server.createConversation({ invitee_id: newInvitee.value });
-    const picked = people.value.find((x) => x.id === newInvitee.value);
-    if (picked) localNames.value[c.id] = picked.full_name;
-    showNew.value = false;
+    const c = await server.createConversation({ invitee_id: p.id });
+    localNames.value[c.id] = p.full_name;
+    peopleQuery.value = "";
     await loadList();
     const fresh = convos.value.find((x) => x.id === c.id) ?? c;
     await openConv(fresh);
   } catch (e: any) {
-    $q.notify({ type: "negative", message: `시작 실패: ${e?.message ?? e}` });
+    $q.notify({ type: "negative", message: `대화 시작 실패: ${e?.message ?? e}` });
   }
 }
 
 onMounted(async () => {
   await loadList();
+  loadPeople();
   // 휴가 승인 등에서 ?conv=<id> 로 넘어오면 해당 대화를 자동으로 연다.
   const wanted = props.initialConvId ?? (route.query.conv as string | undefined);
   const wantedName = props.initialConvName ?? (route.query.name as string | undefined);
@@ -202,14 +192,34 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
   <q-page class="chat-page">
     <!-- 좌측: 대화 목록 -->
     <div class="chat-sidebar">
-      <div class="row items-center q-pa-md q-gutter-sm">
+      <div class="row items-center q-px-md q-pt-md q-pb-xs q-gutter-sm">
         <div class="text-h6 text-weight-bold col">대화</div>
         <q-btn v-if="convos.length" flat dense color="negative" icon="o_delete_sweep" label="전체 삭제" @click="confirmDeleteAll" />
-        <q-btn unelevated dense color="primary" icon="o_search" label="대화 상대 찾기" @click="openNew" />
+      </div>
+      <div class="q-px-md q-pb-sm">
+        <q-input v-model="peopleQuery" dense outlined clearable placeholder="이름으로 검색해 대화 시작" @focus="loadPeople">
+          <template #prepend><q-icon name="o_search" /></template>
+        </q-input>
       </div>
 
       <q-scroll-area class="chat-list">
-        <q-list separator>
+        <!-- 검색 중: 매칭된 사람 목록 (클릭 시 대화 시작) -->
+        <q-list v-if="peopleQuery.trim()" separator>
+          <q-item v-for="p in peopleResults" :key="p.id" clickable @click="startChatWith(p)">
+            <q-item-section avatar>
+              <q-avatar color="blue-grey-2" text-color="blue-grey-9" size="36px">{{ p.full_name.slice(0, 1) }}</q-avatar>
+            </q-item-section>
+            <q-item-section>
+              <q-item-label class="text-weight-medium">{{ p.full_name }}</q-item-label>
+              <q-item-label caption>{{ p.position_ko }}</q-item-label>
+            </q-item-section>
+            <q-item-section side><q-icon name="o_chat" color="primary" /></q-item-section>
+          </q-item>
+          <div v-if="!peopleResults.length" class="text-center text-grey-5 q-py-lg">검색 결과 없음</div>
+        </q-list>
+
+        <!-- 평소: 대화 목록 -->
+        <q-list v-else separator>
           <q-item v-for="c in convos" :key="c.id" clickable :active="active?.id === c.id" active-class="conv-active" @click="openConv(c)">
             <q-item-section avatar>
               <q-avatar color="blue-grey-2" text-color="blue-grey-9" size="40px">{{ convTitle(c).slice(0, 1) }}</q-avatar>
@@ -261,29 +271,9 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
       </template>
       <div v-else class="column flex-center full-height text-grey-5">
         <q-icon name="o_forum" size="4rem" color="grey-4" />
-        <div class="q-mt-sm">대화를 선택하거나 새 대화를 시작하세요</div>
+        <div class="q-mt-sm">대화를 선택하거나, 왼쪽에서 이름을 검색해 대화를 시작하세요</div>
       </div>
     </div>
-
-    <!-- 대화 상대 찾기 -->
-    <q-dialog v-model="showNew">
-      <q-card style="min-width: 380px">
-        <q-card-section class="text-h6">대화 상대 찾기</q-card-section>
-        <q-card-section>
-          <q-select v-model="newInvitee" :options="peopleOptions" emit-value map-options outlined dense use-input
-            label="이름으로 검색" input-debounce="0" :loading="!people.length" autofocus
-            @filter="onPeopleFilter">
-            <template #prepend><q-icon name="o_search" /></template>
-            <template #no-option><q-item><q-item-section class="text-grey-6">검색 결과 없음</q-item-section></q-item></template>
-          </q-select>
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="취소" v-close-popup />
-          <q-btn unelevated color="primary" label="대화 시작" @click="createConv" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
-
   </q-page>
 </template>
 
