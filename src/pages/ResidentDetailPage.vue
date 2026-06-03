@@ -110,20 +110,34 @@ const CARE_CATEGORIES = [
   { label: "기타", value: "other" },
 ];
 const careCatKo = Object.fromEntries(CARE_CATEGORIES.map((c) => [c.value, c.label]));
+const PAGE = 10;
 const careLogs = ref<any[]>([]);
-const careForm = ref({ category: "meal", body: "", flagged: false });
+const carePage = ref(1); const careTotal = ref(0);
+const careMax = computed(() => Math.max(1, Math.ceil(careTotal.value / PAGE)));
+const careForm = ref({ category: "meal", body: "" });
 const savingCare = ref(false);
-async function loadCare() { careLogs.value = await server.careLogsFor(id.value).catch(() => []) as any[]; }
+async function loadCare() {
+  try { const r = await server.careLogsPaged(id.value, carePage.value, PAGE); careLogs.value = r.items; careTotal.value = r.total; }
+  catch { careLogs.value = []; }
+}
 async function addCare() {
   if (!careForm.value.body.trim()) { $q.notify({ type: "warning", message: "내용을 입력하세요." }); return; }
   savingCare.value = true;
   try {
-    await server.createCareLog({ resident_id: id.value, category: careForm.value.category, body: careForm.value.body.trim(), flagged: careForm.value.flagged });
+    await server.createCareLog({ resident_id: id.value, category: careForm.value.category, body: careForm.value.body.trim() });
     $q.notify({ type: "positive", message: "케어 기록이 저장되었습니다." });
-    careForm.value = { category: "meal", body: "", flagged: false };
+    careForm.value = { category: "meal", body: "" };
+    carePage.value = 1;
     await loadCare();
   } catch (e: any) { $q.notify({ type: "negative", message: `저장 실패: ${e?.message ?? e}` }); }
   finally { savingCare.value = false; }
+}
+function deleteCare(c: any) {
+  $q.dialog({ title: "기록 삭제", message: "이 케어 기록을 삭제할까요?", cancel: { label: "취소", flat: true }, ok: { label: "삭제", color: "negative", unelevated: true }, persistent: true })
+    .onOk(async () => {
+      try { await server.deleteCareLog(c.id); if (careLogs.value.length === 1 && carePage.value > 1) carePage.value--; await loadCare(); $q.notify({ type: "positive", message: "삭제되었습니다." }); }
+      catch (e: any) { $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` }); }
+    });
 }
 
 // ── 활력징후 ────────────────────────────────────────────────────────────────
@@ -134,9 +148,14 @@ const VITAL_KINDS = [
 ];
 const vitalKindKo = Object.fromEntries(VITAL_KINDS.map((k) => [k.value, k.label]));
 const vitals = ref<any[]>([]);
+const vitalPage = ref(1); const vitalTotal = ref(0);
+const vitalMax = computed(() => Math.max(1, Math.ceil(vitalTotal.value / PAGE)));
 const vitalForm = ref({ kind: "temperature_celsius", value: "", note: "" });
 const savingVital = ref(false);
-async function loadVitals() { vitals.value = await server.vitalsFor(id.value).catch(() => []) as any[]; }
+async function loadVitals() {
+  try { const r = await server.vitalsPaged(id.value, vitalPage.value, PAGE); vitals.value = r.items; vitalTotal.value = r.total; }
+  catch { vitals.value = []; }
+}
 async function addVital() {
   const v = parseFloat(vitalForm.value.value);
   if (Number.isNaN(v)) { $q.notify({ type: "warning", message: "값을 입력하세요." }); return; }
@@ -145,17 +164,30 @@ async function addVital() {
     await server.createVital({ resident_id: id.value, kind: vitalForm.value.kind, value: v, note: vitalForm.value.note.trim() || null });
     $q.notify({ type: "positive", message: "활력징후가 저장되었습니다." });
     vitalForm.value = { kind: vitalForm.value.kind, value: "", note: "" };
+    vitalPage.value = 1;
     await loadVitals();
   } catch (e: any) { $q.notify({ type: "negative", message: `저장 실패: ${e?.message ?? e}` }); }
   finally { savingVital.value = false; }
 }
+function deleteVital(v: any) {
+  $q.dialog({ title: "기록 삭제", message: "이 활력징후 기록을 삭제할까요?", cancel: { label: "취소", flat: true }, ok: { label: "삭제", color: "negative", unelevated: true }, persistent: true })
+    .onOk(async () => {
+      try { await server.deleteVital(v.id); if (vitals.value.length === 1 && vitalPage.value > 1) vitalPage.value--; await loadVitals(); $q.notify({ type: "positive", message: "삭제되었습니다." }); }
+      catch (e: any) { $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` }); }
+    });
+}
 
 // ── 투약 ────────────────────────────────────────────────────────────────────
 const meds = ref<any[]>([]);
+const medPage = ref(1); const medTotal = ref(0);
+const medMax = computed(() => Math.max(1, Math.ceil(medTotal.value / PAGE)));
 const showMedAdd = ref(false);
 const medForm = ref({ name: "", dosage: "", frequency: "", start_date: new Date().toISOString().slice(0, 10) });
 const savingMed = ref(false);
-async function loadMeds() { meds.value = await server.medsFor(id.value).catch(() => []) as any[]; }
+async function loadMeds() {
+  try { const r = await server.medicationsPaged(id.value, medPage.value, PAGE); meds.value = r.items; medTotal.value = r.total; }
+  catch { meds.value = []; }
+}
 async function addMed() {
   if (!medForm.value.name.trim()) { $q.notify({ type: "warning", message: "약 이름을 입력하세요." }); return; }
   savingMed.value = true;
@@ -167,6 +199,7 @@ async function addMed() {
     $q.notify({ type: "positive", message: "투약 처방이 추가되었습니다." });
     showMedAdd.value = false;
     medForm.value = { name: "", dosage: "", frequency: "", start_date: new Date().toISOString().slice(0, 10) };
+    medPage.value = 1;
     await loadMeds();
   } catch (e: any) { $q.notify({ type: "negative", message: `추가 실패: ${e?.message ?? e}` }); }
   finally { savingMed.value = false; }
@@ -176,7 +209,7 @@ function confirmDeleteMed(m: any) {
     title: "처방 삭제", message: `'${m.name}' 처방을 삭제할까요? 투약 기록도 함께 삭제됩니다.`,
     cancel: { label: "취소", flat: true }, ok: { label: "삭제", color: "negative", unelevated: true }, persistent: true,
   }).onOk(async () => {
-    try { await server.deleteMedication(m.id); $q.notify({ type: "positive", message: "삭제되었습니다." }); await loadMeds(); }
+    try { await server.deleteMedication(m.id); if (meds.value.length === 1 && medPage.value > 1) medPage.value--; await loadMeds(); $q.notify({ type: "positive", message: "삭제되었습니다." }); }
     catch (e: any) { $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` }); }
   });
 }
@@ -187,9 +220,18 @@ const uploading = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const statusKo: Record<string, string> = { pending: "대기", approved: "승인", rejected: "반려" };
 const statusColor: Record<string, string> = { pending: "orange", approved: "positive", rejected: "negative" };
+const photoPage = ref(1); const photoTotal = ref(0); const PHOTO_PAGE = 12;
+const photoMax = computed(() => Math.max(1, Math.ceil(photoTotal.value / PHOTO_PAGE)));
 async function loadPhotos() {
-  try { photos.value = (await server.residentPhotos(id.value)).items; }
+  try { const r = await server.residentPhotos(id.value, photoPage.value, PHOTO_PAGE); photos.value = r.items; photoTotal.value = r.total; }
   catch { photos.value = []; }
+}
+function deletePhoto(p: any) {
+  $q.dialog({ title: "사진 삭제", message: "이 사진을 삭제할까요?", cancel: { label: "취소", flat: true }, ok: { label: "삭제", color: "negative", unelevated: true }, persistent: true })
+    .onOk(async () => {
+      try { await server.deletePhoto(p.id); if (photos.value.length === 1 && photoPage.value > 1) photoPage.value--; await loadPhotos(); $q.notify({ type: "positive", message: "삭제되었습니다." }); }
+      catch (e: any) { $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` }); }
+    });
 }
 // 사진 확대 보기
 const showImg = ref(false);
@@ -304,10 +346,16 @@ onMounted(async () => {
               {{ c.body }}
             </q-item-label>
           </q-item-section>
-          <q-item-section side>{{ fmt(c.recorded_at) }}</q-item-section>
+          <q-item-section side class="row items-center no-wrap">
+            <span class="text-grey-7 q-mr-sm">{{ fmt(c.recorded_at) }}</span>
+            <q-btn v-if="canDelete" flat round dense size="sm" icon="o_delete" color="grey-6" @click="deleteCare(c)" />
+          </q-item-section>
         </q-item>
         <q-item v-if="!careLogs.length"><q-item-section class="text-grey-5 text-center q-py-md">기록 없음</q-item-section></q-item>
       </q-list>
+      <div v-if="careMax > 1" class="row justify-center q-mt-md">
+        <q-pagination v-model="carePage" :max="careMax" :max-pages="7" boundary-numbers direction-links @update:model-value="loadCare" />
+      </div>
     </div>
 
     <!-- 활력징후 -->
@@ -328,10 +376,16 @@ onMounted(async () => {
             <q-item-label><span class="text-weight-medium">{{ vitalKindKo[v.kind] ?? v.kind }}</span> · {{ v.value }}</q-item-label>
             <q-item-label caption v-if="v.note">{{ v.note }}</q-item-label>
           </q-item-section>
-          <q-item-section side>{{ fmt(v.recorded_at) }}</q-item-section>
+          <q-item-section side class="row items-center no-wrap">
+            <span class="text-grey-7 q-mr-sm">{{ fmt(v.recorded_at) }}</span>
+            <q-btn v-if="canDelete" flat round dense size="sm" icon="o_delete" color="grey-6" @click="deleteVital(v)" />
+          </q-item-section>
         </q-item>
         <q-item v-if="!vitals.length"><q-item-section class="text-grey-5 text-center q-py-md">기록 없음</q-item-section></q-item>
       </q-list>
+      <div v-if="vitalMax > 1" class="row justify-center q-mt-md">
+        <q-pagination v-model="vitalPage" :max="vitalMax" :max-pages="7" boundary-numbers direction-links @update:model-value="loadVitals" />
+      </div>
     </div>
 
     <!-- 투약 -->
@@ -344,7 +398,7 @@ onMounted(async () => {
         <q-item v-for="m in meds" :key="m.id">
           <q-item-section>
             <q-item-label class="text-weight-medium">{{ m.name }}</q-item-label>
-            <q-item-label caption>{{ m.dosage }} · {{ m.frequency }}<span v-if="m.status === 'stopped'"> · 중단됨</span></q-item-label>
+            <q-item-label caption>{{ m.dosage }} · {{ m.frequency }}<span v-if="m.is_active === false"> · 중단됨</span></q-item-label>
           </q-item-section>
           <q-item-section side v-if="canDelete">
             <q-btn flat round dense icon="o_delete" color="grey-6" @click="confirmDeleteMed(m)" />
@@ -352,6 +406,9 @@ onMounted(async () => {
         </q-item>
         <q-item v-if="!meds.length"><q-item-section class="text-grey-5 text-center q-py-md">처방 없음</q-item-section></q-item>
       </q-list>
+      <div v-if="medMax > 1" class="row justify-center q-mt-md">
+        <q-pagination v-model="medPage" :max="medMax" :max-pages="7" boundary-numbers direction-links @update:model-value="loadMeds" />
+      </div>
     </div>
 
     <!-- 사진 -->
@@ -369,10 +426,14 @@ onMounted(async () => {
               <q-badge :color="statusColor[p.status] ?? 'grey'" :label="statusKo[p.status] ?? p.status" />
               <q-space />
               <span class="text-caption text-grey-6">{{ fmt(p.taken_at) }}</span>
+              <q-btn v-if="canDelete" flat round dense size="sm" icon="o_delete" color="grey-6" class="q-ml-xs" @click="deletePhoto(p)" />
             </q-card-section>
             <q-card-section v-if="p.caption" class="q-pa-xs q-pt-none text-caption">{{ p.caption }}</q-card-section>
           </q-card>
         </div>
+      </div>
+      <div v-if="photoMax > 1" class="row justify-center q-mt-md">
+        <q-pagination v-model="photoPage" :max="photoMax" :max-pages="7" boundary-numbers direction-links @update:model-value="loadPhotos" />
       </div>
       <div v-else class="column flex-center q-py-xl text-grey-5">
         <q-icon name="o_photo_library" size="3rem" color="grey-4" />

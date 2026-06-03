@@ -201,10 +201,13 @@ export const server = {
   medicationAdministrations(residentId: string) {
     return fetchJson<any[]>(`/api/v1/residents/${residentId}/medication-administrations`);
   },
-  residentPhotos(residentId: string) {
-    return fetchJson<{ items: Array<{ id: string; taken_at: string; caption: string | null; status: string; data_url: string }>; total: number }>(
-      `/api/v1/residents/${residentId}/photos?page=1&page_size=60`,
+  residentPhotos(residentId: string, page = 1, page_size = 24) {
+    return fetchJson<{ items: Array<{ id: string; taken_at: string; caption: string | null; status: string; data_url: string }>; total: number; page: number; page_size: number }>(
+      `/api/v1/residents/${residentId}/photos?page=${page}&page_size=${page_size}`,
     );
+  },
+  deletePhoto(id: string) {
+    return fetchJson(`/api/v1/photos/${id}`, { method: "DELETE" });
   },
   uploadPhoto(residentId: string, file: File, caption?: string) {
     const fd = new FormData();
@@ -275,17 +278,38 @@ export const server = {
   deleteMedication(id: string) {
     return fetchJson(`/api/v1/medications/${id}`, { method: "DELETE" });
   },
+  medicationsPaged(residentId: string, page = 1, page_size = 10) {
+    return fetchJson<{ items: any[]; total: number; page: number; page_size: number }>(
+      `/api/v1/medications/paged?resident_id=${residentId}&include_stopped=true&page=${page}&page_size=${page_size}`,
+    );
+  },
   flagCareLog(id: string) {
     return fetchJson(`/api/v1/care-logs/${id}/flag`, { method: "PATCH" });
   },
   vitalsFor(residentId: string) {
     return fetchJson(`/api/v1/residents/${residentId}/vitals`);
   },
+  vitalsPaged(residentId: string, page = 1, page_size = 10) {
+    return fetchJson<{ items: any[]; total: number; page: number; page_size: number }>(
+      `/api/v1/vitals/paged?resident_id=${residentId}&page=${page}&page_size=${page_size}`,
+    );
+  },
+  deleteVital(id: string) {
+    return fetchJson(`/api/v1/vitals/${id}`, { method: "DELETE" });
+  },
   createVital(payload: { resident_id: string; kind: string; value: number; note?: string | null }) {
     return fetchJson("/api/v1/vitals", { method: "POST", body: JSON.stringify(payload) });
   },
   careLogsFor(residentId: string) {
     return fetchJson(`/api/v1/residents/${residentId}/care-logs`);
+  },
+  careLogsPaged(residentId: string, page = 1, page_size = 10) {
+    return fetchJson<{ items: any[]; total: number; page: number; page_size: number }>(
+      `/api/v1/care-logs/paged?resident_id=${residentId}&page=${page}&page_size=${page_size}`,
+    );
+  },
+  deleteCareLog(id: string) {
+    return fetchJson(`/api/v1/care-logs/${id}`, { method: "DELETE" });
   },
   createCareLog(payload: {
     resident_id: string;
