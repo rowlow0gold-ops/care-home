@@ -27,6 +27,7 @@ const convos = ref<ConversationSummary[]>([]);
 const active = ref<ConversationSummary | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const draft = ref("");
+const newBelow = ref(false); // 위로 스크롤한 상태에서 새 메시지가 왔는지
 const loadingList = ref(false);
 const loadingMsgs = ref(false);
 const sending = ref(false);
@@ -110,6 +111,7 @@ async function openConv(c: ConversationSummary) {
   loadingMsgs.value = true;
   try {
     messages.value = await server.messages(c.id);
+    newBelow.value = false;
     await scrollBottom();
     c.unread_count = 0; // server marks read on fetch
   } catch (e: any) {
@@ -134,6 +136,7 @@ async function pollActive() {
     if (fresh.length) {
       messages.value.push(...fresh);
       if (wasAtBottom) await scrollBottom(); // 바닥에 있을 때만 따라 내려간다
+      else newBelow.value = true;            // 위에서 읽는 중이면 '새 메시지' 버블 표시
     }
   } catch { /* transient; ignore */ }
 }
@@ -146,6 +149,7 @@ async function send() {
     const msg = await server.postMessage(active.value.id, body);
     messages.value.push(msg);
     draft.value = "";
+    newBelow.value = false;
     await scrollBottom();
   } catch (e: any) {
     $q.notify({ type: "negative", message: `전송 실패: ${e?.message ?? e}` });
@@ -159,6 +163,8 @@ async function scrollBottom() {
   const el = threadEl.value;
   if (el) el.scrollTop = el.scrollHeight;
 }
+async function scrollToNew() { await scrollBottom(); newBelow.value = false; }
+function onThreadScroll() { if (atBottom()) newBelow.value = false; }
 
 // ── 상대 검색 (인라인) → 이름으로 검색해 바로 대화 시작 ──────────────────────
 const people = ref<ChatContact[]>([]);
@@ -266,7 +272,7 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
           </div>
         </div>
 
-        <div ref="threadEl" class="chat-thread">
+        <div ref="threadEl" class="chat-thread" @scroll="onThreadScroll">
           <q-inner-loading :showing="loadingMsgs" />
           <div v-for="m in messages" :key="m.id" class="msg-row" :class="{ mine: m.sender_id === myId }">
             <div class="msg-bubble" :class="{ mine: m.sender_id === myId }">
@@ -277,6 +283,8 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
           </div>
           <div v-if="!messages.length && !loadingMsgs" class="text-center text-grey-5 q-py-xl">첫 메시지를 보내보세요</div>
         </div>
+
+        <q-btn v-if="newBelow" class="new-msg-pill" rounded unelevated color="primary" icon="o_arrow_downward" label="새 메시지" @click="scrollToNew" />
 
         <div class="chat-input row q-pa-sm q-gutter-sm items-end">
           <q-input v-model="draft" outlined dense autogrow class="col" placeholder="메시지를 입력하세요"
@@ -298,7 +306,8 @@ onBeforeUnmount(() => { if (poll) clearInterval(poll); });
 .chat-list { flex: 1; }
 .invite-box { background: #fff8e1; }
 .conv-active { background: #e3f2fd; }
-.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+.new-msg-pill { position: absolute; left: 50%; transform: translateX(-50%); bottom: 72px; z-index: 6; box-shadow: 0 3px 10px rgba(0,0,0,.25); }
 .chat-header { border-bottom: 1px solid #e0e0e0; }
 .chat-thread { flex: 1; overflow-y: auto; padding: 16px; background: #f7f9fb; position: relative; }
 .msg-row { display: flex; margin-bottom: 10px; }
