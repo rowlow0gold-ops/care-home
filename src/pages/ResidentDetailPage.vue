@@ -254,6 +254,42 @@ async function onFile(e: Event) {
   }
 }
 
+// ── 수정 다이얼로그 (4개 탭) ──────────────────────────────────────────────────
+const careEditOpen = ref(false);
+const careEditForm = ref({ id: "", category: "meal", body: "" });
+function openCareEdit(c: any) { careEditForm.value = { id: c.id, category: c.category, body: c.body }; careEditOpen.value = true; }
+async function submitCareEdit() {
+  try { await server.updateCareLog(careEditForm.value.id, { category: careEditForm.value.category, body: careEditForm.value.body.trim() }); careEditOpen.value = false; await loadCare(); $q.notify({ type: "positive", message: "수정되었습니다." }); }
+  catch (e: any) { $q.notify({ type: "negative", message: `수정 실패: ${e?.message ?? e}` }); }
+}
+
+const vitalEditOpen = ref(false);
+const vitalEditForm = ref({ id: "", kind: "temperature_celsius", value: "", note: "" });
+function openVitalEdit(v: any) { vitalEditForm.value = { id: v.id, kind: v.kind, value: String(v.value), note: v.note ?? "" }; vitalEditOpen.value = true; }
+async function submitVitalEdit() {
+  const val = parseFloat(vitalEditForm.value.value);
+  if (Number.isNaN(val)) { $q.notify({ type: "warning", message: "값을 입력하세요." }); return; }
+  try { await server.updateVital(vitalEditForm.value.id, { kind: vitalEditForm.value.kind, value: val, note: vitalEditForm.value.note.trim() || null }); vitalEditOpen.value = false; await loadVitals(); $q.notify({ type: "positive", message: "수정되었습니다." }); }
+  catch (e: any) { $q.notify({ type: "negative", message: `수정 실패: ${e?.message ?? e}` }); }
+}
+
+const medEditOpen = ref(false);
+const medEditForm = ref({ id: "", name: "", dosage: "", frequency: "", start_date: "" });
+function openMedEdit(m: any) { medEditForm.value = { id: m.id, name: m.name, dosage: m.dosage, frequency: m.frequency, start_date: m.start_date }; medEditOpen.value = true; }
+async function submitMedEdit() {
+  if (!medEditForm.value.name.trim()) { $q.notify({ type: "warning", message: "약 이름을 입력하세요." }); return; }
+  try { await server.updateMedication(medEditForm.value.id, { name: medEditForm.value.name.trim(), dosage: medEditForm.value.dosage.trim(), frequency: medEditForm.value.frequency.trim(), start_date: medEditForm.value.start_date }); medEditOpen.value = false; await loadMeds(); $q.notify({ type: "positive", message: "수정되었습니다." }); }
+  catch (e: any) { $q.notify({ type: "negative", message: `수정 실패: ${e?.message ?? e}` }); }
+}
+
+const photoEditOpen = ref(false);
+const photoEditForm = ref({ id: "", caption: "" });
+function openPhotoEdit(p: any) { photoEditForm.value = { id: p.id, caption: p.caption ?? "" }; photoEditOpen.value = true; }
+async function submitPhotoEdit() {
+  try { await server.updatePhoto(photoEditForm.value.id, photoEditForm.value.caption.trim() || null); photoEditOpen.value = false; await loadPhotos(); $q.notify({ type: "positive", message: "수정되었습니다." }); }
+  catch (e: any) { $q.notify({ type: "negative", message: `수정 실패: ${e?.message ?? e}` }); }
+}
+
 onMounted(async () => {
   await loadResident();
   await Promise.all([loadCare(), loadVitals(), loadMeds(), loadPhotos()]);
@@ -348,6 +384,7 @@ onMounted(async () => {
           </q-item-section>
           <q-item-section side class="row items-center no-wrap">
             <span class="text-grey-7 q-mr-sm">{{ fmt(c.recorded_at) }}</span>
+            <q-btn v-if="canEdit" flat round dense size="sm" icon="o_edit" color="grey-6" @click="openCareEdit(c)" />
             <q-btn v-if="canDelete" flat round dense size="sm" icon="o_delete" color="grey-6" @click="deleteCare(c)" />
           </q-item-section>
         </q-item>
@@ -378,6 +415,7 @@ onMounted(async () => {
           </q-item-section>
           <q-item-section side class="row items-center no-wrap">
             <span class="text-grey-7 q-mr-sm">{{ fmt(v.recorded_at) }}</span>
+            <q-btn v-if="canEdit" flat round dense size="sm" icon="o_edit" color="grey-6" @click="openVitalEdit(v)" />
             <q-btn v-if="canDelete" flat round dense size="sm" icon="o_delete" color="grey-6" @click="deleteVital(v)" />
           </q-item-section>
         </q-item>
@@ -400,8 +438,9 @@ onMounted(async () => {
             <q-item-label class="text-weight-medium">{{ m.name }}</q-item-label>
             <q-item-label caption>{{ m.dosage }} · {{ m.frequency }}<span v-if="m.is_active === false"> · 중단됨</span></q-item-label>
           </q-item-section>
-          <q-item-section side v-if="canDelete">
-            <q-btn flat round dense icon="o_delete" color="grey-6" @click="confirmDeleteMed(m)" />
+          <q-item-section side class="row items-center no-wrap">
+            <q-btn v-if="canEdit" flat round dense icon="o_edit" color="grey-6" @click="openMedEdit(m)" />
+            <q-btn v-if="canDelete" flat round dense icon="o_delete" color="grey-6" @click="confirmDeleteMed(m)" />
           </q-item-section>
         </q-item>
         <q-item v-if="!meds.length"><q-item-section class="text-grey-5 text-center q-py-md">처방 없음</q-item-section></q-item>
@@ -426,7 +465,8 @@ onMounted(async () => {
               <q-badge :color="statusColor[p.status] ?? 'grey'" :label="statusKo[p.status] ?? p.status" />
               <q-space />
               <span class="text-caption text-grey-6">{{ fmt(p.taken_at) }}</span>
-              <q-btn v-if="canDelete" flat round dense size="sm" icon="o_delete" color="grey-6" class="q-ml-xs" @click="deletePhoto(p)" />
+              <q-btn v-if="canEdit" flat round dense size="sm" icon="o_edit" color="grey-6" class="q-ml-xs" @click="openPhotoEdit(p)" />
+              <q-btn v-if="canDelete" flat round dense size="sm" icon="o_delete" color="grey-6" @click="deletePhoto(p)" />
             </q-card-section>
             <q-card-section v-if="p.caption" class="q-pa-xs q-pt-none text-caption">{{ p.caption }}</q-card-section>
           </q-card>
@@ -445,6 +485,70 @@ onMounted(async () => {
     <q-dialog v-model="showImg">
       <q-card flat class="bg-transparent shadow-0">
         <q-img :src="imgSrc" fit="contain" style="max-width: 92vw; max-height: 90vh" @click="showImg = false" class="cursor-pointer" />
+      </q-card>
+    </q-dialog>
+
+    <!-- 케어 기록 수정 -->
+    <q-dialog v-model="careEditOpen">
+      <q-card style="min-width: 420px">
+        <q-card-section class="text-h6">케어 기록 수정</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-select v-model="careEditForm.category" :options="CARE_CATEGORIES" label="구분" outlined dense emit-value map-options />
+          <q-input v-model="careEditForm.body" label="내용" type="textarea" autogrow outlined dense />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="저장" unelevated @click="submitCareEdit" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- 활력징후 수정 -->
+    <q-dialog v-model="vitalEditOpen">
+      <q-card style="min-width: 380px">
+        <q-card-section class="text-h6">활력징후 수정</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-select v-model="vitalEditForm.kind" :options="VITAL_KINDS" label="항목" outlined dense emit-value map-options />
+          <q-input v-model="vitalEditForm.value" label="값" type="number" outlined dense />
+          <q-input v-model="vitalEditForm.note" label="메모" outlined dense />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="저장" unelevated @click="submitVitalEdit" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- 투약 처방 수정 -->
+    <q-dialog v-model="medEditOpen">
+      <q-card style="min-width: 420px">
+        <q-card-section class="text-h6">처방 수정</q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-input v-model="medEditForm.name" label="약 이름 *" outlined dense />
+          <div class="row q-gutter-sm">
+            <q-input class="col" v-model="medEditForm.dosage" label="용량" outlined dense />
+            <q-input class="col" v-model="medEditForm.frequency" label="횟수" outlined dense />
+          </div>
+          <q-input v-model="medEditForm.start_date" label="시작일" mask="####-##-##" outlined dense />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="저장" unelevated @click="submitMedEdit" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- 사진 설명 수정 -->
+    <q-dialog v-model="photoEditOpen">
+      <q-card style="min-width: 360px">
+        <q-card-section class="text-h6">사진 설명 수정</q-card-section>
+        <q-card-section>
+          <q-input v-model="photoEditForm.caption" label="설명 (caption)" type="textarea" autogrow outlined dense />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="취소" v-close-popup />
+          <q-btn color="primary" label="저장" unelevated @click="submitPhotoEdit" />
+        </q-card-actions>
       </q-card>
     </q-dialog>
 

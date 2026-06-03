@@ -209,6 +209,9 @@ export const server = {
   deletePhoto(id: string) {
     return fetchJson(`/api/v1/photos/${id}`, { method: "DELETE" });
   },
+  updatePhoto(id: string, caption: string | null) {
+    return fetchJson(`/api/v1/photos/${id}`, { method: "PATCH", body: JSON.stringify({ caption }) });
+  },
   uploadPhoto(residentId: string, file: File, caption?: string) {
     const fd = new FormData();
     fd.append("resident_id", residentId);
@@ -278,6 +281,9 @@ export const server = {
   deleteMedication(id: string) {
     return fetchJson(`/api/v1/medications/${id}`, { method: "DELETE" });
   },
+  updateMedication(id: string, payload: { name?: string; dosage?: string; frequency?: string; start_date?: string }) {
+    return fetchJson(`/api/v1/medications/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
   medicationsPaged(residentId: string, page = 1, page_size = 10) {
     return fetchJson<{ items: any[]; total: number; page: number; page_size: number }>(
       `/api/v1/medications/paged?resident_id=${residentId}&include_stopped=true&page=${page}&page_size=${page_size}`,
@@ -297,6 +303,9 @@ export const server = {
   deleteVital(id: string) {
     return fetchJson(`/api/v1/vitals/${id}`, { method: "DELETE" });
   },
+  updateVital(id: string, payload: { kind?: string; value?: number; note?: string | null }) {
+    return fetchJson(`/api/v1/vitals/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
   createVital(payload: { resident_id: string; kind: string; value: number; note?: string | null }) {
     return fetchJson("/api/v1/vitals", { method: "POST", body: JSON.stringify(payload) });
   },
@@ -310,6 +319,9 @@ export const server = {
   },
   deleteCareLog(id: string) {
     return fetchJson(`/api/v1/care-logs/${id}`, { method: "DELETE" });
+  },
+  updateCareLog(id: string, payload: { category?: string; body?: string }) {
+    return fetchJson(`/api/v1/care-logs/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
   },
   createCareLog(payload: {
     resident_id: string;
