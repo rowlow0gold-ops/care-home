@@ -1,11 +1,47 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
-import { useRouter } from "vue-router";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { useRouter, useRoute } from "vue-router";
+import { useQuasar } from "quasar";
 import { useServerSessionStore } from "@/stores/server-session";
+import { server } from "@/lib/server";
 
 const session = useServerSessionStore();
 const router = useRouter();
+const route = useRoute();
+const $q = useQuasar();
 const miniMode = ref(false);
+
+// ── 전역 채팅 알림 — 어느 화면에 있어도 새 메시지를 토스트로 알린다 ───────────
+const chatUnread = ref(0);
+const seenAt = new Map<string, string>(); // conv id → last_message_at
+let baselined = false;
+let chatTimer: number | undefined;
+async function pollChat() {
+  if (!session.isLoggedIn) return;
+  try {
+    const invites = await server.myInvites().catch(() => []);
+    if (invites.length) await Promise.all(invites.map((i) => server.acceptInvite(i.id).catch(() => {})));
+    const convos = await server.conversations();
+    chatUnread.value = convos.reduce((s, c) => s + (c.unread_count || 0), 0);
+    const onChatPage = route.path === "/chat";
+    for (const c of convos) {
+      const prev = seenAt.get(c.id);
+      seenAt.set(c.id, c.last_message_at);
+      if (!baselined) continue;                 // 첫 폴링은 기준선만
+      if (c.unread_count > 0 && c.last_message_at !== prev && !onChatPage) {
+        $q.notify({
+          icon: "o_chat", color: "primary", textColor: "white", position: "top-right", timeout: 5000,
+          message: c.other_names || c.title || "새 메시지", caption: c.last_body || "",
+          actions: [{ label: "보기", color: "white", handler: () => router.push("/chat") }],
+        });
+      }
+    }
+    baselined = true;
+  } catch { /* transient */ }
+}
+
+onMounted(() => { pollChat(); chatTimer = window.setInterval(pollChat, 5000); });
+onBeforeUnmount(() => { if (chatTimer) clearInterval(chatTimer); });
 
 // Korean display label per server role (fallback when no position).
 const roleLabel: Record<string, string> = {
@@ -124,6 +160,7 @@ async function handleLogout() {
                   <q-icon :name="item.icon" />
                 </q-item-section>
                 <q-item-section v-if="!miniMode">{{ item.label }}</q-item-section>
+                <q-badge v-if="item.key === 'chat' && chatUnread" color="red" rounded floating>{{ chatUnread }}</q-badge>
                 <q-tooltip v-if="miniMode" anchor="center right" self="center left">
                   {{ item.label }}
                 </q-tooltip>
