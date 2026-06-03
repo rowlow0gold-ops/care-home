@@ -172,7 +172,6 @@ const peopleResults = computed<ChatContact[]>(() => {
     .slice(0, 50);
 });
 async function loadPeople() {
-  if (people.value.length) return;
   try { people.value = await server.chatContacts(); } catch { /* */ }
 }
 async function startChatWith(p: ChatContact) {
