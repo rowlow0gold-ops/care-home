@@ -169,13 +169,40 @@ function onThreadScroll() { if (atBottom()) newBelow.value = false; }
 // ── 상대 검색 (인라인) → 이름으로 검색해 바로 대화 시작 ──────────────────────
 const people = ref<ChatContact[]>([]);
 const peopleQuery = ref("");
+// ── 한글 초성(初聲) 추출 + 관련도 점수 검색 ─────────────────────────────────
+const CHO = ["ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"];
+function toChosung(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    out += code >= 0xac00 && code <= 0xd7a3 ? CHO[Math.floor((code - 0xac00) / 588)] : s[i];
+  }
+  return out;
+}
+// 점수: 0=제외. 이름 정확/접두 > 초성 접두 > 이름 부분 > 초성 부분 > 직책. 높을수록 위.
+function matchScore(p: ChatContact, q: string): number {
+  const name = p.full_name.toLowerCase();
+  const cho = toChosung(p.full_name);
+  const pos = posKo(p.position).toLowerCase();
+  if (name === q) return 100;
+  if (name.startsWith(q)) return 85;
+  if (cho.startsWith(q)) return 75;   // 예: "ㄱㅅㅇ" → 강수아
+  if (name.includes(q)) return 65;
+  if (cho.includes(q)) return 55;
+  if (pos.startsWith(q)) return 40;
+  if (pos.includes(q)) return 30;
+  return 0;
+}
 const peopleResults = computed<ChatContact[]>(() => {
   const q = peopleQuery.value.trim().toLowerCase();
   if (!q) return [];
   return people.value
     .filter((p) => p.id !== myId.value)
-    .filter((p) => p.full_name.toLowerCase().includes(q) || posKo(p.position).toLowerCase().includes(q))
-    .slice(0, 50);
+    .map((p) => ({ p, s: matchScore(p, q) }))
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s || a.p.full_name.localeCompare(b.p.full_name, "ko"))
+    .slice(0, 50)
+    .map((x) => x.p);
 });
 async function loadPeople() {
   try { people.value = await server.chatContacts(); } catch { /* */ }
