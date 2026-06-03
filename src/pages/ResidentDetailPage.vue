@@ -155,7 +155,6 @@ const meds = ref<any[]>([]);
 const showMedAdd = ref(false);
 const medForm = ref({ name: "", dosage: "", frequency: "", start_date: new Date().toISOString().slice(0, 10) });
 const savingMed = ref(false);
-const acting = ref<string | null>(null);
 async function loadMeds() { meds.value = await server.medsFor(id.value).catch(() => []) as any[]; }
 async function addMed() {
   if (!medForm.value.name.trim()) { $q.notify({ type: "warning", message: "약 이름을 입력하세요." }); return; }
@@ -172,15 +171,6 @@ async function addMed() {
   } catch (e: any) { $q.notify({ type: "negative", message: `추가 실패: ${e?.message ?? e}` }); }
   finally { savingMed.value = false; }
 }
-async function administer(m: any) {
-  acting.value = m.id;
-  try {
-    await server.administerMedication(m.id);
-    $q.notify({ type: "positive", message: `${m.name} 투약 기록됨.` });
-  } catch (e: any) { $q.notify({ type: "negative", message: `실패: ${e?.message ?? e}` }); }
-  finally { acting.value = null; }
-}
-
 // ── 사진 ────────────────────────────────────────────────────────────────────
 const photos = ref<Array<{ id: string; taken_at: string; caption: string | null; status: string; data_url: string }>>([]);
 const uploading = ref(false);
@@ -191,6 +181,10 @@ async function loadPhotos() {
   try { photos.value = (await server.residentPhotos(id.value)).items; }
   catch { photos.value = []; }
 }
+// 사진 확대 보기
+const showImg = ref(false);
+const imgSrc = ref("");
+function openImg(src: string) { imgSrc.value = src; showImg.value = true; }
 function pickPhoto() { fileInput.value?.click(); }
 async function onFile(e: Event) {
   const f = (e.target as HTMLInputElement).files?.[0];
@@ -286,8 +280,7 @@ onMounted(async () => {
         <div class="row q-col-gutter-sm items-start">
           <q-select class="col-12 col-sm-3" v-model="careForm.category" :options="CARE_CATEGORIES" label="구분" outlined dense emit-value map-options />
           <q-input class="col" v-model="careForm.body" label="내용" outlined dense type="textarea" autogrow />
-          <div class="col-auto column q-gutter-xs">
-            <q-toggle v-model="careForm.flagged" label="관리자 보고" color="negative" dense />
+          <div class="col-auto">
             <q-btn color="primary" label="저장" unelevated :loading="savingCare" @click="addCare" />
           </div>
         </div>
@@ -310,11 +303,13 @@ onMounted(async () => {
     <!-- 활력징후 -->
     <div v-show="tab === 'vitals'">
       <q-card flat bordered class="q-pa-md q-mb-md">
-        <div class="row q-col-gutter-sm items-start">
+        <div class="row q-col-gutter-sm items-center">
           <q-select class="col-12 col-sm-3" v-model="vitalForm.kind" :options="VITAL_KINDS" label="항목" outlined dense emit-value map-options />
           <q-input class="col-6 col-sm-2" v-model="vitalForm.value" label="값" type="number" outlined dense />
           <q-input class="col" v-model="vitalForm.note" label="메모" outlined dense />
-          <q-btn class="col-auto" color="primary" label="저장" unelevated :loading="savingVital" @click="addVital" />
+          <div class="col-auto">
+            <q-btn color="primary" label="저장" unelevated :loading="savingVital" @click="addVital" />
+          </div>
         </div>
       </q-card>
       <q-list bordered separator>
@@ -341,9 +336,6 @@ onMounted(async () => {
             <q-item-label class="text-weight-medium">{{ m.name }}</q-item-label>
             <q-item-label caption>{{ m.dosage }} · {{ m.frequency }}<span v-if="m.status === 'stopped'"> · 중단됨</span></q-item-label>
           </q-item-section>
-          <q-item-section side>
-            <q-btn dense unelevated color="primary" label="투약 기록" :loading="acting === m.id" :disable="m.status === 'stopped'" @click="administer(m)" />
-          </q-item-section>
         </q-item>
         <q-item v-if="!meds.length"><q-item-section class="text-grey-5 text-center q-py-md">처방 없음</q-item-section></q-item>
       </q-list>
@@ -359,7 +351,7 @@ onMounted(async () => {
       <div v-if="photos.length" class="row q-col-gutter-sm">
         <div v-for="p in photos" :key="p.id" class="col-6 col-sm-4 col-md-3">
           <q-card flat bordered>
-            <q-img :src="p.data_url" :ratio="1" />
+            <q-img :src="p.data_url" :ratio="1" class="cursor-pointer" @click="openImg(p.data_url)" />
             <q-card-section class="q-pa-xs row items-center">
               <q-badge :color="statusColor[p.status] ?? 'grey'" :label="statusKo[p.status] ?? p.status" />
               <q-space />
@@ -374,6 +366,13 @@ onMounted(async () => {
         <div class="q-mt-sm">사진 없음</div>
       </div>
     </div>
+
+    <!-- 사진 확대 -->
+    <q-dialog v-model="showImg">
+      <q-card flat class="bg-transparent shadow-0">
+        <q-img :src="imgSrc" fit="contain" style="max-width: 92vw; max-height: 90vh" @click="showImg = false" class="cursor-pointer" />
+      </q-card>
+    </q-dialog>
 
     <!-- Add medication dialog -->
     <q-dialog v-model="showMedAdd" persistent>
