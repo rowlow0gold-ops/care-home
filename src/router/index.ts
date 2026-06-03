@@ -22,6 +22,7 @@ const router = createRouter({
         { path: "schedule",      name: "schedule",      component: () => import("@/pages/SchedulePage.vue"),     meta: { minRole: 1 } },
         { path: "teams",         name: "teams",         component: () => import("@/pages/TeamsPage.vue"),        meta: { minRole: 3 } },
         { path: "leave",         name: "leave",         component: () => import("@/pages/LeaveApprovalPage.vue"), meta: { minRole: 3 } },
+        { path: "chat",          name: "chat",          component: () => import("@/pages/ChatPage.vue"),          meta: { minRole: 1 } },
         { path: "meal-plan",     name: "meals",         component: () => import("@/pages/MealPlanPage.vue"),      meta: { minRole: 3 } },
         { path: "reports",       name: "reports",       component: () => import("@/pages/ReportsPage.vue"),       meta: { minRole: 3 } },
         { path: "staff",         name: "staff",         component: () => import("@/pages/StaffPage.vue"),        meta: { minRole: 3 } },

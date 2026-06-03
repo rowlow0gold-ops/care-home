@@ -4,7 +4,6 @@ import { useRouter } from "vue-router";
 import { useQuasar } from "quasar";
 import { server } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
-import ChatPage from "@/pages/ChatPage.vue";
 
 const $q = useQuasar();
 const router = useRouter();
@@ -14,22 +13,13 @@ const canDecide = computed(() => session.hasRole("branch_manager"));
 
 type Row = Awaited<ReturnType<typeof server.leaveRequestsPaged>>["items"][number];
 
-// 휴가 / 채팅 탭. 채팅은 이 화면 안에 들어있다.
-const tab = ref<"leave" | "chat">("leave");
-const chatConvId = ref<string | null>(null);
-const chatConvName = ref<string | null>(null);
-const chatKey = ref(0);
-
 function openDetail(r: Row) {
   router.push({ path: `/staff/${r.user_id}`, query: { from: "leave" } });
 }
 async function startChat(r: Row) {
   try {
     const c = await server.createConversation({ invitee_id: r.user_id });
-    chatConvId.value = c.id;
-    chatConvName.value = r.user_name;
-    chatKey.value++;      // 채팅 화면을 새로 띄워 해당 대화를 연다
-    tab.value = "chat";
+    router.push({ name: "chat", query: { conv: c.id, name: r.user_name } });
   } catch (e: any) {
     $q.notify({ type: "negative", message: `대화 시작 실패: ${e?.message ?? e}` });
   }
@@ -153,17 +143,9 @@ onMounted(load);
 
 <template>
   <q-page class="q-pa-lg">
-    <div class="text-h5 text-weight-bold q-mb-sm">휴가</div>
-    <q-tabs v-model="tab" align="left" no-caps inline-label active-color="primary" indicator-color="primary"
-      class="text-grey-7 q-mb-md" style="max-width: 320px">
-      <q-tab name="leave" icon="o_event_busy" label="휴가 승인" />
-      <q-tab name="chat" icon="o_forum" label="채팅" />
-    </q-tabs>
-
-    <q-tab-panels v-model="tab" animated>
-      <q-tab-panel name="leave" class="q-pa-none">
     <div class="row items-center q-mb-md q-gutter-sm">
       <div class="col">
+        <div class="text-h5 text-weight-bold">휴가</div>
         <div class="text-caption text-grey-6">태블릿에서 신청된 휴무를 승인/반려합니다</div>
       </div>
       <q-btn v-if="canDecide" unelevated color="positive" icon="o_done_all" label="전체 승인" :loading="approvingAll" @click="approveAll" />
@@ -216,11 +198,5 @@ onMounted(load);
       <q-select v-model="pageSize" :options="[10, 20, 50]" dense outlined style="min-width:80px" />
       <q-pagination v-model="page" :max="totalPages" :max-pages="7" boundary-numbers direction-links />
     </div>
-      </q-tab-panel>
-
-      <q-tab-panel name="chat" class="q-pa-none">
-        <ChatPage :key="chatKey" :initial-conv-id="chatConvId" :initial-conv-name="chatConvName" />
-      </q-tab-panel>
-    </q-tab-panels>
   </q-page>
 </template>
