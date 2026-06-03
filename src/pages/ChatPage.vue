@@ -110,14 +110,21 @@ async function openConv(c: ConversationSummary) {
   }
 }
 
+// 스레드가 거의 바닥에 있는지 (여기서만 새 메시지로 자동 스크롤).
+function atBottom(): boolean {
+  const el = threadEl.value;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+}
 async function pollActive() {
   if (!active.value) return;
   const since = messages.value.length ? messages.value[messages.value.length - 1].id : undefined;
+  const wasAtBottom = atBottom(); // 받기 전 위치 기준
   try {
     const fresh = await server.messages(active.value.id, since);
     if (fresh.length) {
       messages.value.push(...fresh);
-      await scrollBottom();
+      if (wasAtBottom) await scrollBottom(); // 바닥에 있을 때만 따라 내려간다
     }
   } catch { /* transient; ignore */ }
 }
