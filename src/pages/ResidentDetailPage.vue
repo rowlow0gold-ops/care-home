@@ -171,6 +171,16 @@ async function addMed() {
   } catch (e: any) { $q.notify({ type: "negative", message: `추가 실패: ${e?.message ?? e}` }); }
   finally { savingMed.value = false; }
 }
+function confirmDeleteMed(m: any) {
+  $q.dialog({
+    title: "처방 삭제", message: `'${m.name}' 처방을 삭제할까요? 투약 기록도 함께 삭제됩니다.`,
+    cancel: { label: "취소", flat: true }, ok: { label: "삭제", color: "negative", unelevated: true }, persistent: true,
+  }).onOk(async () => {
+    try { await server.deleteMedication(m.id); $q.notify({ type: "positive", message: "삭제되었습니다." }); await loadMeds(); }
+    catch (e: any) { $q.notify({ type: "negative", message: `삭제 실패: ${e?.message ?? e}` }); }
+  });
+}
+
 // ── 사진 ────────────────────────────────────────────────────────────────────
 const photos = ref<Array<{ id: string; taken_at: string; caption: string | null; status: string; data_url: string }>>([]);
 const uploading = ref(false);
@@ -335,6 +345,9 @@ onMounted(async () => {
           <q-item-section>
             <q-item-label class="text-weight-medium">{{ m.name }}</q-item-label>
             <q-item-label caption>{{ m.dosage }} · {{ m.frequency }}<span v-if="m.status === 'stopped'"> · 중단됨</span></q-item-label>
+          </q-item-section>
+          <q-item-section side v-if="canDelete">
+            <q-btn flat round dense icon="o_delete" color="grey-6" @click="confirmDeleteMed(m)" />
           </q-item-section>
         </q-item>
         <q-item v-if="!meds.length"><q-item-section class="text-grey-5 text-center q-py-md">처방 없음</q-item-section></q-item>

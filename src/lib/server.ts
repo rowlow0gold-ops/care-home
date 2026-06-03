@@ -272,6 +272,9 @@ export const server = {
   stopMedication(id: string) {
     return fetchJson(`/api/v1/medications/${id}/stop`, { method: "PATCH" });
   },
+  deleteMedication(id: string) {
+    return fetchJson(`/api/v1/medications/${id}`, { method: "DELETE" });
+  },
   flagCareLog(id: string) {
     return fetchJson(`/api/v1/care-logs/${id}/flag`, { method: "PATCH" });
   },
