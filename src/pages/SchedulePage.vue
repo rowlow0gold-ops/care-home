@@ -673,7 +673,20 @@ const PATTERNS: GenPattern[] = [
   { value: "4x2",  label: "4조 2교대 · 12시간 (2개 조 휴무)", groups: 4, shifts: SHIFTS_12 },
   { value: "4x3",  label: "4조 3교대 · 8시간 (1개 조 휴무)", groups: 4, shifts: SHIFTS_8 },
 ];
-const genForm = ref({ pattern: "2x12", cycleWeeks: 1 as 1 | 2, spanWeeks: 1 as 1 | 2 });
+const SHIFT_NAMES_2 = ["주간", "야간"];
+const SHIFT_NAMES_3 = ["주간", "오후", "야간"];
+const genForm = ref({ pattern: "2x12", cycleWeeks: 1 as 1 | 2, maxWeekHours: 52, shiftStarts: ["07:00", "19:00"] });
+// 패턴을 바꾸면 시작 시각을 그 패턴 기본값으로 리셋
+watch(() => genForm.value.pattern, () => {
+  const pat = PATTERNS.find((p) => p.value === genForm.value.pattern) ?? PATTERNS[0];
+  genForm.value.shiftStarts = pat.shifts.map((s) => s.start);
+});
+// 커스텀 시작 시각 → 교대 파생. 종료 = 다음 교대의 시작 (24시간 빈틈 없이 커버).
+const genShifts = computed<PatShift[]>(() => {
+  const starts = genForm.value.shiftStarts;
+  const names = starts.length === 2 ? SHIFT_NAMES_2 : SHIFT_NAMES_3;
+  return starts.map((s, i) => ({ name: names[i] ?? `교대${i + 1}`, start: s, end: starts[(i + 1) % starts.length] }));
+});
 const genWorkers = ref<OrgPerson[]>([]);
 const genTeam = computed(() => teams.value.find((t) => t.id === selectedTeam.value) ?? null);
 const genElders = computed(() => (genTeam.value ? activeResidents.value.filter((r) => r.team_id === genTeam.value!.id).length : 0));
@@ -732,15 +745,49 @@ async function openGenerate() {
   showGenDialog.value = true; // 요양: 24시간 패턴 선택
 }
 
-// 주간팀: 팀 근무창 1교대, 1:10 인원, 휴무 회전
+// 생성 스팬 전체의 기존 근무 + 주별 누적 시간 상태 (중복 방지·주 최대시간 한도용)
+async function buildSpanState(dates: string[]) {
+  const existing = new Set<string>();              // `${id}-${ds}` 이미 근무 있는 날
+  const weekHours = new Map<string, number>();     // `${id}-${weekIdx}` → 누적 시간
+  const wkOf = (ds: string) => weekIndexOf(new Date(ds + "T00:00:00"));
+  const addHours = (id: string, ds: string, h: number) => {
+    const k = `${id}-${wkOf(ds)}`;
+    weekHours.set(k, (weekHours.get(k) ?? 0) + h);
+  };
+  try {
+    const rows = await server.roster(dates[0], dates[dates.length - 1], selectedTeam.value || undefined);
+    for (const r of rows) {
+      if (pendingDeletes.value.has(r.id)) continue;
+      existing.add(`${r.user_id}-${r.shift_date}`);
+      addHours(r.user_id, r.shift_date, r.shift_hours);
+    }
+  } catch { /* 조회 실패 시 빈 상태로 진행 */ }
+  for (const c of pendingCreates.value) {
+    if (c.shift_date >= dates[0] && c.shift_date <= dates[dates.length - 1]) {
+      existing.add(`${c.staff_id}-${c.shift_date}`);
+      addHours(c.staff_id, c.shift_date, c.shift_hours);
+    }
+  }
+  const hoursOf = (id: string, ds: string) => weekHours.get(`${id}-${wkOf(ds)}`) ?? 0;
+  return { existing, addHours, hoursOf };
+}
+
+function spanDates(): { days: Date[]; dates: string[] } {
+  const days: Date[] = [];
+  for (let i = 0; i < 28; i++) days.push(addDays(weekDates.value[0], i)); // 1개월(4주)
+  return { days, dates: days.map(localDateStr) };
+}
+
+// 주간팀: 팀 근무창 1교대, 1:10 인원, 주 최대시간 한도 + 휴가 제외, 1개월 생성
 async function generateDayTeam(team: Team) {
   generating.value = true;
   try {
     const required = genRequired.value;
+    const maxH = Math.max(8, genForm.value.maxWeekHours || 52);
     const W = genWorkers.value;
-    const dates = weekDates.value.map(localDateStr);
+    const { dates } = spanDates();
     const onLeave = await collectApprovedLeave(dates);
-    const existing = new Set(entries.value.map((e) => `${e.staff_id}-${e.shift_date}`));
+    const { existing, addHours, hoursOf } = await buildSpanState(dates);
     const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
     const fresh: ScheduleEntry[] = [];
     let ptr = 0, shortfall = 0;
@@ -749,19 +796,21 @@ async function generateDayTeam(team: Team) {
       while (filled < required && tries < W.length) {
         const w = W[ptr % W.length]; ptr++; tries++;
         const key = `${w.id}-${ds}`;
-        if (onLeave.has(key) || existing.has(key)) continue;
+        if (onLeave.has(key) || existing.has(key) || hoursOf(w.id, ds) + hrs > maxH) continue;
         existing.add(key);
+        addHours(w.id, ds, hrs);
         fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
           shift_start: team.shift_start_hm, shift_end: team.shift_end_hm, shift_hours: hrs, notes: `${team.name} 자동` });
         filled++;
       }
       if (filled < required) shortfall++;
     }
-    finishGeneration(fresh, shortfall, `주간 1교대`);
+    finishGeneration(fresh, shortfall, "주간 1교대 · 1개월");
   } finally { generating.value = false; }
 }
 
-// 요양팀: 선택한 패턴으로 24시간 시스템 생성
+// 요양팀: 선택한 패턴으로 24시간 시스템 생성 (1개월)
+// 휴가·주 최대시간으로 조가 못 채우면 다른 조의 쉬는 인력으로 자동 대체(백필).
 async function runPatternGeneration() {
   const team = genTeam.value;
   const pat = genPattern.value;
@@ -770,43 +819,64 @@ async function runPatternGeneration() {
     $q.notify({ type: "negative", message: `${pat.groups}개 조를 나눌 인력이 부족합니다 (최소 ${pat.groups}명, 현재 ${genWorkers.value.length}명).` });
     return;
   }
+  if (genForm.value.shiftStarts.some((s) => !/^\d{2}:\d{2}$/.test(s))) {
+    $q.notify({ type: "negative", message: "교대 시작 시각(HH:MM)을 확인하세요." });
+    return;
+  }
   showGenDialog.value = false;
   generating.value = true;
   try {
     const required = genRequired.value;
+    const maxH = Math.max(8, genForm.value.maxWeekHours || 52);
+    const shifts = genShifts.value.map((s) => ({ ...s, hours: hoursBetween(s.start, s.end) }));
     // 조 나누기 (라운드로빈)
     const groups: OrgPerson[][] = Array.from({ length: pat.groups }, () => []);
     genWorkers.value.forEach((w, i) => groups[i % pat.groups].push(w));
-    // 생성 기간 (이번 주부터 1~2주)
-    const days: Date[] = [];
-    for (let i = 0; i < genForm.value.spanWeeks * 7; i++) days.push(addDays(weekDates.value[0], i));
-    const dates = days.map(localDateStr);
+    const { days, dates } = spanDates();
     const onLeave = await collectApprovedLeave(dates);
-    const existing = new Set(entries.value.map((e) => `${e.staff_id}-${e.shift_date}`));
-    const ptrs = groups.map(() => 0);
+    const { existing, addHours, hoursOf } = await buildSpanState(dates);
+
+    const canWork = (w: OrgPerson, ds: string, h: number) =>
+      !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) && hoursOf(w.id, ds) + h <= maxH;
     const fresh: ScheduleEntry[] = [];
+    const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, gi: number | null) => {
+      existing.add(`${w.id}-${ds}`);
+      addHours(w.id, ds, sh.hours);
+      fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
+        shift_start: sh.start, shift_end: sh.end, shift_hours: sh.hours,
+        notes: `${team.name} ${sh.name}${gi === null ? " 대체" : `(${["A", "B", "C", "D"][gi] ?? gi + 1}조)`}` });
+    };
+
+    const ptrs = groups.map(() => 0);
     let shortfall = 0;
     for (const d of days) {
       const ds = localDateStr(d);
       const period = Math.floor(weekIndexOf(d) / genForm.value.cycleWeeks); // 1~2주마다 주야 회전
-      pat.shifts.forEach((sh, si) => {
+      shifts.forEach((sh, si) => {
         const gi = (si + period) % pat.groups;       // 교대 si ← 조 gi (휴무 조는 자동으로 빠짐)
         const g = groups[gi];
         let filled = 0, tries = 0;
         while (filled < required && tries < g.length) {
           const w = g[ptrs[gi] % g.length]; ptrs[gi]++; tries++;
-          const key = `${w.id}-${ds}`;
-          if (onLeave.has(key) || existing.has(key)) continue;
-          existing.add(key);
-          fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
-            shift_start: sh.start, shift_end: sh.end, shift_hours: hoursBetween(sh.start, sh.end),
-            notes: `${team.name} ${sh.name}(${["A","B","C","D"][gi] ?? gi + 1}조)` });
+          if (!canWork(w, ds, sh.hours)) continue;
+          assign(w, ds, sh, gi);
           filled++;
+        }
+        // 백필: 휴가·한도로 부족하면 그날 쉬는 인력 중 주간 누적시간이 적은 순으로 대체
+        if (filled < required) {
+          const subs = genWorkers.value
+            .filter((w) => canWork(w, ds, sh.hours))
+            .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
+          for (const w of subs) {
+            if (filled >= required) break;
+            assign(w, ds, sh, null);
+            filled++;
+          }
         }
         if (filled < required) shortfall++;
       });
     }
-    finishGeneration(fresh, shortfall, pat.label);
+    finishGeneration(fresh, shortfall, `${pat.label} · 1개월`);
   } finally { generating.value = false; }
 }
 
@@ -1271,8 +1341,19 @@ const showAlerts = ref(true);
           <div class="row q-gutter-sm">
             <q-select class="col" v-model="genForm.cycleWeeks" outlined dense emit-value map-options label="주야 변경 주기"
               :options="[{ label: '1주마다 변경', value: 1 }, { label: '2주마다 변경', value: 2 }]" />
-            <q-select class="col" v-model="genForm.spanWeeks" outlined dense emit-value map-options label="생성 기간"
-              :options="[{ label: '이번 주 (7일)', value: 1 }, { label: '2주 (14일)', value: 2 }]" />
+            <q-input class="col" v-model.number="genForm.maxWeekHours" type="number" outlined dense
+              label="주 최대 근무시간" suffix="h" hint="기본 52h — 한도 내에서 휴무 자동 발생" />
+          </div>
+          <div>
+            <div class="text-caption text-grey-7 q-mb-xs">교대 시작 시각 — 종료는 다음 교대 시작 (24시간 자동 커버)</div>
+            <div class="row q-gutter-sm">
+              <q-input v-for="(s, i) in genForm.shiftStarts" :key="i" class="col" v-model="genForm.shiftStarts[i]"
+                :label="genShifts[i]?.name" outlined dense mask="##:##" hint="HH:MM" />
+            </div>
+          </div>
+          <div class="text-caption text-grey-7">
+            <q-icon name="o_event" size="14px" /> 생성 기간: 이번 주 시작일부터 <b>1개월(4주)</b> ·
+            승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
           </div>
           <q-banner dense rounded :class="genShort ? 'bg-red-1 text-red-9' : 'bg-green-1 text-green-9'">
             <template #avatar><q-icon :name="genShort ? 'o_warning' : 'o_check_circle'" /></template>
