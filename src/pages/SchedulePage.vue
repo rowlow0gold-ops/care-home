@@ -200,53 +200,80 @@ async function collectLeave(dates: string[]): Promise<Set<string>> {
   return set;
 }
 
+// 균등 배치 — 시설은 매일 안정적으로 돌아가야 한다 (어르신 케어 비율 유지).
+// 직원마다 '근무 창(window)'을 골라 준다:
+//   12시간조 = 연속 3일 창(이후 4일 휴무) · 8시간조 = 연속 2일 휴무 창(주 5일 근무)
+// 창은 (1) 휴가와 겹쳐 근무일 손실이 가장 적고 (2) 그날 전체 인원이 가장 적은
+// 날을 채우는 쪽으로 고른다 → 휴가가 금·토에 60명 몰려도 일별 총원이 평탄해진다.
+// 같은 창을 2주 내내 유지해 개인 리듬(3 on 4 off)이 고정된다.
+function assignWindows(
+  members: OrgPerson[], group: "h12" | "h8", weeks: string[][], onLeave: Set<string>,
+  counts: Map<string, number>, assigned: Map<string, OrgPerson[]>,
+) {
+  const avail = (p: OrgPerson, ds: string) => !onLeave.has(`${p.id}-${ds}`);
+  for (const p of members) {
+    let best: string[] | null = null;
+    let bestWorked = -1, bestLoad = Infinity;
+    for (let s0 = 0; s0 < 7; s0++) {
+      const days: string[] = [];
+      for (const week of weeks) {
+        if (group === "h12") {
+          for (let k = 0; k < 3; k++) days.push(week[(s0 + k) % 7]);
+        } else {
+          for (let d = 0; d < 7; d++) if (d !== s0 && d !== (s0 + 1) % 7) days.push(week[d]);
+        }
+      }
+      const workable = days.filter((ds) => avail(p, ds));
+      const load = workable.reduce((sum, ds) => sum + (counts.get(ds) ?? 0), 0) / Math.max(1, workable.length);
+      if (workable.length > bestWorked || (workable.length === bestWorked && load < bestLoad)) {
+        best = workable; bestWorked = workable.length; bestLoad = load;
+      }
+    }
+    for (const ds of best ?? []) {
+      counts.set(ds, (counts.get(ds) ?? 0) + 1);
+      if (!assigned.has(ds)) assigned.set(ds, []);
+      assigned.get(ds)!.push(p);
+    }
+  }
+}
+
 function buildEntries(onLeave: Set<string>): UpsertRoster[] {
   const out: UpsertRoster[] = [];
   const dates = periodDays.value.map(localDateStr);
-  // 같은 조 안에서 시작 오프셋을 직원 순번으로 분산 → 매일 커버가 균일해진다
-  const h12 = { day: 0, night: 0 } as Record<string, number>;
-  const h8ptr = { day: 0, evening: 0, night: 0 } as Record<string, number>;
-  const offsets = new Map<string, number>();
-  for (const p of caregivers.value) {
-    if (p.shift_group === "h12") {
-      const k = p.preferred_shift === "night" ? "night" : "day";
-      offsets.set(p.id, h12[k]++ % 7);
-    } else if (p.shift_group === "h8") {
-      const k = (p.preferred_shift ?? "day") as keyof typeof h8ptr;
-      offsets.set(p.id, h8ptr[k]++ % 7);
-    }
+  // 고정 조 단위(블록별)로 주마다 균등 배치
+  const SUBGROUPS: Array<{ group: string; shift: string; note: string }> = [
+    { group: "h12", shift: "day",     note: "12시간조 Day (3일 근무·4일 휴무)" },
+    { group: "h12", shift: "night",   note: "12시간조 Night (3일 근무·4일 휴무)" },
+    { group: "h8",  shift: "day",     note: "8시간조 주간 (주 5일)" },
+    { group: "h8",  shift: "evening", note: "8시간조 오후 (주 5일)" },
+    { group: "h8",  shift: "night",   note: "8시간조 야간 (주 5일)" },
+  ];
+  const weeks = [dates.slice(0, 7), dates.slice(7, 14)];
+  const counts = new Map<string, number>(); // 일별 총원 — 조를 가로질러 공유해 평탄화
+  for (const sg of SUBGROUPS) {
+    const members = caregivers.value.filter((p) =>
+      p.shift_group === sg.group &&
+      (sg.group === "h12"
+        ? (p.preferred_shift === "night" ? "night" : "day") === sg.shift
+        : (p.preferred_shift ?? "day") === sg.shift));
+    if (!members.length) continue;
+    const b = blockFor(sg.group, sg.shift);
+    const assigned = new Map<string, OrgPerson[]>();
+    assignWindows(members, sg.group as "h12" | "h8", weeks, onLeave, counts, assigned);
+    assigned.forEach((list, ds) => {
+      for (const p of list) {
+        out.push({ user_id: p.id, shift_date: ds, shift_start: b.start, shift_end: b.end, shift_hours: b.hours, notes: sg.note });
+      }
+    });
   }
-  // 기간 내 day index — 달력 고정 (기간이 바뀌어도 개인 리듬 유지)
-  const baseIdx = Math.floor((periodStart.value.getTime() - EPOCH.getTime()) / 86400000);
+  // 알바조 — 지정 요일 계약은 그대로 (옮길 수 없다)
   periodDays.value.forEach((d, di) => {
     const ds = dates[di];
-    const absIdx = baseIdx + di;
     for (const p of caregivers.value) {
-      if (!p.shift_group || onLeave.has(`${p.id}-${ds}`)) continue;
-      let works = false;
-      let b: Block;
-      if (p.shift_group === "h12") {
-        // 3일 연속 근무 후 4일 휴무 — (절대일 - 오프셋) mod 7 < 3
-        const off = offsets.get(p.id) ?? 0;
-        works = ((absIdx - off) % 7 + 7) % 7 < 3;
-        b = blockFor("h12", p.preferred_shift === "night" ? "night" : "day");
-      } else if (p.shift_group === "h8") {
-        // 주 5일 — 연속 휴무 2일을 직원별로 분산
-        const off = offsets.get(p.id) ?? 0;
-        works = ((absIdx - off) % 7 + 7) % 7 >= 2;
-        b = blockFor("h8", p.preferred_shift ?? "day");
-      } else {
-        // 알바조 — 지정 요일만
-        works = !!p.work_days?.includes(d.getDay());
-        b = blockFor("pt", p.preferred_shift ?? "day");
-      }
-      if (!works) continue;
-      out.push({
-        user_id: p.id, shift_date: ds, shift_start: b.start, shift_end: b.end, shift_hours: b.hours,
-        notes: p.shift_group === "h12" ? `12시간조 ${b.shift === "day" ? "Day" : "Night"} (3일 근무·4일 휴무)`
-             : p.shift_group === "h8" ? `8시간조 ${b.shift === "day" ? "주간" : b.shift === "evening" ? "오후" : "야간"} (주 5일)`
-             : "알바조 (지정 요일)",
-      });
+      if (p.shift_group !== "pt" || onLeave.has(`${p.id}-${ds}`)) continue;
+      if (!p.work_days?.includes(d.getDay())) continue;
+      const b = blockFor("pt", p.preferred_shift ?? "day");
+      out.push({ user_id: p.id, shift_date: ds, shift_start: b.start, shift_end: b.end, shift_hours: b.hours, notes: "알바조 (지정 요일)" });
     }
   });
   return out;
