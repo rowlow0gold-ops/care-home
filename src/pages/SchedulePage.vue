@@ -395,7 +395,7 @@ const genPresets = computed<Preset[]>(() =>
   genConfigured.value
     ? genShifts.value.map((s) => ({
         label: `${s.name} (${s.start}–${s.end})`,
-        start: s.start, end: s.end, hours: hoursBetween(s.start, s.end),
+        start: s.start, end: s.end, hours: netHours(s.start, s.end),
       }))
     : [],
 );
@@ -517,6 +517,15 @@ function hoursBetween(start: string, end: string): number {
   if (mins <= 0) mins += 24 * 60; // wraps past midnight
   return Math.round((mins / 60) * 10) / 10;
 }
+// 휴게(식사)시간 — 근로기준법 기준 4시간당 30분을 근무시간에서 자동 차감한다.
+//   예: 8시간 블록 → 휴게 1h → 근무 7h 인정 / 12시간 블록 → 휴게 1.5h → 10.5h.
+function breakHoursOf(block: number): number {
+  return Math.floor(block / 4) * 0.5;
+}
+function netHours(start: string, end: string): number {
+  const block = hoursBetween(start, end);
+  return Math.max(0.5, Math.round((block - breakHoursOf(block)) * 10) / 10);
+}
 async function addNewType() {
   const t = newType.value;
   if (!t.label.trim() || !/^\d{2}:\d{2}$/.test(t.start) || !/^\d{2}:\d{2}$/.test(t.end)) {
@@ -529,7 +538,7 @@ async function addNewType() {
   }
   // 시간은 시작/종료로 자동 계산.
   customPresets.value = [...customPresets.value, {
-    label: t.label.trim(), start: t.start, end: t.end, hours: hoursBetween(t.start, t.end),
+    label: t.label.trim(), start: t.start, end: t.end, hours: netHours(t.start, t.end),
   }];
   await savePresets();
   showNewType.value = false;
@@ -922,7 +931,7 @@ async function generateDayTeam(team: Team) {
     const onLeave = await collectApprovedLeave(dates);
     const { existing, addHours, hoursOf, daysOf } = await buildSpanState(dates);
     const maxDays = 7 - genForm.value.restDays; // 주당 휴무일 보장
-    const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
+    const hrs = netHours(team.shift_start_hm, team.shift_end_hm); // 휴게 차감
     const fresh: ScheduleEntry[] = [];
     const put = (w: OrgPerson, ds: string, tag: string) => {
       existing.add(`${w.id}-${ds}`);
@@ -979,7 +988,7 @@ async function runPatternGeneration() {
   try {
     const required = genRequired.value;
     const maxH = Math.max(8, genForm.value.maxWeekHours || 52);
-    const shifts = genShifts.value.map((s) => ({ ...s, hours: hoursBetween(s.start, s.end) }));
+    const shifts = genShifts.value.map((s) => ({ ...s, hours: netHours(s.start, s.end) })); // 휴게 차감
     // 조 나누기 (라운드로빈)
     const groups: OrgPerson[][] = Array.from({ length: pat.groups }, () => []);
     genWorkers.value.forEach((w, i) => groups[i % pat.groups].push(w));
@@ -1565,7 +1574,9 @@ const showAlerts = ref(true);
             label="주 최대 근무시간" suffix="h" hint="기본 52h" />
           <q-checkbox v-model="genForm.resetExisting" dense label="기존 근무 초기화 후 생성 (대상 4주 전체, 저장 전까지 되돌리기 가능)" />
           <div class="text-caption text-grey-7">
-            <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
+            <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.<br />
+            <q-icon name="o_restaurant" size="14px" /> 휴게(식사)시간은 4시간당 30분씩 근무시간에서 자동 차감됩니다
+            (8h 교대 → 7h, 12h 교대 → 10.5h 인정).
           </div>
           <q-banner dense rounded
             :class="genShort ? 'bg-red-1 text-red-9' : genOvertimeExpected ? 'bg-orange-1 text-orange-10' : 'bg-green-1 text-green-9'">
