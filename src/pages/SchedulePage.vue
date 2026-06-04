@@ -87,7 +87,12 @@ async function loadPeople() {
     if (!res.items.length) break;
     page++;
   }
-  caregivers.value = all.filter((p) => !p.is_inactive && p.position === "caregiver");
+  const seen = new Set<string>();
+  caregivers.value = all.filter((p) => {
+    if (p.is_inactive || p.position !== "caregiver" || seen.has(p.id)) return false;
+    seen.add(p.id);
+    return true;
+  });
 }
 async function loadElders() {
   const res = await server.residentsPaged({ care_type: "residential", status: "active", page: 1, page_size: 1 });
@@ -322,6 +327,22 @@ function openDay(d: Date) {
   dayLabel.value = `${d.getMonth() + 1}월 ${d.getDate()}일 (${DAY_KO[d.getDay()]})`;
   dayDialog.value = true;
 }
+// 시간대별 인원 — 같은 인원이 유지되는 구간으로 묶는다 (07시 시작 기준)
+interface HourSeg { range: string; count: number }
+function daySegments(ds: string): HourSeg[] {
+  const cov = hourCover(ds);
+  const segs: HourSeg[] = [];
+  const fmt = (h: number) => String(h % 24).padStart(2, "0");
+  let start = 7; // 시설 하루는 07시에 시작
+  for (let i = 1; i <= 24; i++) {
+    const h = (7 + i) % 24;
+    if (i === 24 || cov[h] !== cov[start % 24]) {
+      segs.push({ range: `${fmt(start)}–${fmt((7 + i) % 24)}시`, count: cov[start % 24] });
+      start = 7 + i;
+    }
+  }
+  return segs;
+}
 function dayBlocks(ds: string): Array<{ block: Block; list: RosterEntry[] }> {
   const dm = byDate.value.get(ds);
   if (!dm) return [];
@@ -445,6 +466,18 @@ onMounted(loadAll);
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
         <q-card-section class="q-gutter-md">
+          <!-- 시간대별 인원 — 1:10 기준 충족 여부 색상 -->
+          <div>
+            <div class="text-caption text-grey-7 q-mb-xs">시간대별 근무 인원 (필요 {{ required }}명/시간)</div>
+            <div class="row q-gutter-xs">
+              <q-badge v-for="seg in daySegments(dayDs)" :key="seg.range"
+                :color="seg.count >= required ? 'green-2' : 'red-2'"
+                :text-color="seg.count >= required ? 'green-10' : 'red-10'">
+                {{ seg.range }} <b class="q-ml-xs">{{ seg.count }}명</b>
+              </q-badge>
+            </div>
+          </div>
+          <q-separator />
           <div v-for="{ block, list } in dayBlocks(dayDs)" :key="block.key">
             <div class="row items-center q-mb-xs">
               <q-badge :color="block.color" :text-color="block.text">{{ block.label }}</q-badge>
