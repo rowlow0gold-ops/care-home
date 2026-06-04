@@ -451,7 +451,7 @@ export const server = {
     });
   },
   /** 근무조 저장 — 2주 스케줄 발행의 기준 데이터 */
-  updateWorkPrefs(staffId: string, prefs: { shift_group: string | null; preferred_shift: string | null; work_days: number[] | null }) {
+  updateWorkPrefs(staffId: string, prefs: { shift_group: string | null; preferred_shift: string | null; work_days: number[] | null; extra_shift_ok?: boolean }) {
     return fetchJson<{ ok: boolean }>(`/api/v1/staff/${staffId}/work-prefs`, {
       method: "PATCH",
       body: JSON.stringify(prefs),
@@ -800,6 +800,8 @@ export interface OrgPerson {
   preferred_shift: string | null;
   /** 가능 요일 0=일 … 6=토; null = 모든 요일 가능 (예: 일요일만 아르바이트 = [0]) */
   work_days: number[] | null;
+  /** 추가 근무 선호 — 주말 주 6일 근무를 받아들임 (기본 false) */
+  extra_shift_ok: boolean;
   updated_at: string;
   is_inactive: boolean;
 }

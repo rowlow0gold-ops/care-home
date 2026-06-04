@@ -199,8 +199,8 @@ const publishing = ref(false);
 //   한 런은 내 주말 슬롯을 포함하고(일→일월화, 토→목금토), 다른 런은
 //   반대 주의 평일 3일. 연속 근무는 최대 3일.
 //
-// 8시간조: 2주 10일 = 평일 9일 + 주말 1일. 주말이 낀 주는 6일 근무가 될 수
-//   있고(허용), 반대 주에 평일 1일을 쉬어 2주 휴무 4일을 지킨다.
+// 8시간조: 2주 10일 = 평일 9일 + 주말 1일. 기본은 주말 주에 평일 휴무를 받아
+//   최대 주 5일. '추가 근무 선호' 직원만 반대 주에 쉬어 주말 주 6일이 된다.
 function weekendSlot(idx: number, periodIdx: number): number {
   return (((idx + periodIdx) % 4) + 4) % 4; // 0=일₁ 1=토₁ 2=일₂ 3=토₂
 }
@@ -243,7 +243,10 @@ function assignH8(
   sorted.forEach((p, idx) => {
     const slot = weekendSlot(idx, periodIdx);
     put(p, slotDay(slot, weeks)); // 내 주말 1일
-    const offWeek = slot < 2 ? 1 : 0;          // 평일 휴무는 주말 반대 주에
+    // 기본: 주말이 낀 주에 평일 휴무 → 최대 주 5일.
+    // 추가 근무 선호자(extra_shift_ok)만 반대 주에 쉬어 주말 주 6일이 된다.
+    const weekendWeek = slot < 2 ? 0 : 1;
+    const offWeek = p.extra_shift_ok ? 1 - weekendWeek : weekendWeek;
     const offDow = 1 + ((idx + periodIdx) % 5); // 월~금 분산 (기간마다 회전)
     for (let w = 0; w < 2; w++) {
       for (let d = 1; d <= 5; d++) {

@@ -218,10 +218,10 @@ async function submitEdit() {
 // ── 근무조 편집 — 센터(행정)에서 직접 관리 ──────────────────────────────────
 const showPrefsDialog = ref(false);
 const prefsTarget = ref<OrgPerson | null>(null);
-const prefsForm = ref<{ group: string | null; shift: string | null; days: number[] }>({ group: null, shift: null, days: [] });
+const prefsForm = ref<{ group: string | null; shift: string | null; days: number[]; extra: boolean }>({ group: null, shift: null, days: [], extra: false });
 function openPrefs(p: OrgPerson) {
   prefsTarget.value = p;
-  prefsForm.value = { group: p.shift_group ?? null, shift: p.preferred_shift ?? null, days: [...(p.work_days ?? [])] };
+  prefsForm.value = { group: p.shift_group ?? null, shift: p.preferred_shift ?? null, days: [...(p.work_days ?? [])], extra: p.extra_shift_ok ?? false };
   showPrefsDialog.value = true;
 }
 // 조를 바꾸면 교대 기본값을 보정 (12시간조에는 '오후'가 없다)
@@ -238,6 +238,7 @@ async function submitPrefs() {
       shift_group: f.group,
       preferred_shift: f.group ? f.shift : null,
       work_days: null,
+      extra_shift_ok: f.extra,
     });
     $q.notify({ type: "positive", message: `${prefsTarget.value.full_name}님의 근무조를 저장했습니다. 다음 2주 스케줄 발행에 반영됩니다.` });
     showPrefsDialog.value = false;
@@ -403,7 +404,10 @@ onMounted(() => { load(); });
             hint="3일 연속 런 ×2 (2주) — 주말은 2주에 1일만, 근무 요일은 기간마다 회전" />
           <q-select v-else-if="prefsForm.group === 'h8'" v-model="prefsForm.shift"
             :options="SHIFT8_OPTIONS" label="교대 (8시간 고정)" outlined dense emit-value map-options
-            hint="2주 10일 근무 — 주말은 2주에 1일만(슬롯 로테이션), 그 주는 6일 근무 가능" />
+            hint="2주 10일 근무 — 주말은 2주에 1일만(슬롯 로테이션), 기본 최대 주 5일" />
+          <q-toggle v-if="prefsForm.group === 'h8'" v-model="prefsForm.extra" dense
+            label="추가 근무 선호 — 주말이 낀 주 6일 근무 허용"
+            class="q-mt-sm" color="orange" />
         </q-card-section>
         <q-card-actions align="right" class="q-px-md q-pb-md">
           <q-btn flat label="취소" v-close-popup />
