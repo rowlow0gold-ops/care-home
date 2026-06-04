@@ -28,7 +28,7 @@ const canEdit = computed(() => session.canEdit);
 const canDelete = computed(() => session.canDelete);
 
 // ── View mode ─────────────────────────────────────────────────────────────────
-const viewMode = ref<"week" | "month">("month"); // 기본 월간 보기
+const viewMode = ref<"week" | "month">("week"); // 기본 주간 보기
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface ScheduleEntry {
@@ -889,14 +889,13 @@ async function buildSpanState(dates: string[]) {
   return { existing, addHours, hoursOf, daysOf };
 }
 
-// 생성 대상 달(이번 달/다음 달)의 1일~말일
+// 생성 대상: 이번 주 일요일 기준 4주 블록.
+//   this = 이번 주 일요일부터 4주 / next(기본) = 4주 후부터 4주
 function spanDates(): { days: Date[]; dates: string[] } {
-  const now = new Date();
-  const offset = genForm.value.target === "this" ? 0 : 1;
-  const first = new Date(now.getFullYear(), now.getMonth() + offset, 1);
-  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+  const base = weekMonday(new Date()); // 이번 주 일요일
+  const first = genForm.value.target === "this" ? base : addDays(base, 28);
   const days: Date[] = [];
-  for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) days.push(new Date(d));
+  for (let i = 0; i < 28; i++) days.push(addDays(first, i));
   return { days, dates: days.map(localDateStr) };
 }
 
@@ -1523,8 +1522,11 @@ const showAlerts = ref(true);
         </q-card-section>
         <q-card-section class="q-gutter-md">
           <div class="row q-gutter-sm">
-            <q-select class="col" v-model="genForm.target" outlined dense emit-value map-options label="생성 대상"
-              :options="[{ label: '다음 달', value: 'next' }, { label: '이번 달', value: 'this' }]" />
+            <q-select class="col" v-model="genForm.target" outlined dense emit-value map-options label="생성 대상 (4주)"
+              :options="[
+                { label: '다음 4주 (4주 후부터)', value: 'next' },
+                { label: '이번 4주 (이번 주 일요일부터)', value: 'this' },
+              ]" />
             <q-select class="col" v-model="genForm.restDays" outlined dense emit-value map-options label="주당 휴무일 (인력별)"
               :options="[
                 { label: '주 1일 휴무', value: 1 },
@@ -1550,7 +1552,7 @@ const showAlerts = ref(true);
           </template>
           <q-input v-else v-model.number="genForm.maxWeekHours" type="number" outlined dense
             label="주 최대 근무시간" suffix="h" hint="기본 52h" />
-          <q-checkbox v-model="genForm.resetExisting" dense label="기존 근무 초기화 후 생성 (대상 달 전체, 저장 전까지 되돌리기 가능)" />
+          <q-checkbox v-model="genForm.resetExisting" dense label="기존 근무 초기화 후 생성 (대상 4주 전체, 저장 전까지 되돌리기 가능)" />
           <div class="text-caption text-grey-7">
             <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
           </div>
