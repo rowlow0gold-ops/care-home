@@ -387,16 +387,16 @@ async function loadPresets() {
     const s = await presetsStore();
     customPresets.value = (await s.get<Preset[]>("custom_presets")) ?? [];
     // 저장된 자동 생성 설정 복원 → 근무 유형 팔레트에 반영
-    const gf = await s.get<{ pattern: string; cycleWeeks: 1 | 2; maxWeekHours: number; shiftStarts: string[]; holidays?: "all" | "skip_holiday" | "skip_weekend_holiday"; resetExisting?: boolean }>("gen_form");
+    const gf = await s.get<{ pattern: string; cycleWeeks: 1 | 2; maxWeekHours: number; shiftStarts: string[]; restDays?: 1 | 2; resetExisting?: boolean; target?: "this" | "next" }>("gen_form");
     if (gf?.pattern && Array.isArray(gf.shiftStarts)) {
       genForm.value.pattern = gf.pattern;
       await nextTick(); // 패턴 watcher 가 shiftStarts 를 리셋한 뒤에 복원
       genForm.value.cycleWeeks = gf.cycleWeeks ?? 1;
       genForm.value.maxWeekHours = gf.maxWeekHours ?? 52;
       genForm.value.shiftStarts = gf.shiftStarts;
-      genForm.value.holidays = gf.holidays ?? "all";
+      genForm.value.restDays = gf.restDays ?? 1;
       genForm.value.resetExisting = gf.resetExisting ?? true;
-      genForm.value.target = (gf as any).target ?? "next";
+      genForm.value.target = gf.target ?? "next";
       genConfigured.value = true;
     }
   } catch { customPresets.value = []; }
@@ -708,7 +708,7 @@ const SHIFT_NAMES_3 = ["주간", "오후", "야간"];
 const genForm = ref({
   pattern: "2x12", cycleWeeks: 1 as 1 | 2, maxWeekHours: 52, shiftStarts: ["07:00", "19:00"],
   target: "next" as "this" | "next", // 생성 대상: 이번 달 / 다음 달 (기본 다음 달)
-  holidays: "all" as "all" | "skip_holiday" | "skip_weekend_holiday", // 휴일 운영 옵션
+  restDays: 1 as 1 | 2, // 주당 휴무일(인력별) — 절대 규칙. 시설은 매일(공휴일 포함) 운영
   resetExisting: true, // 생성 기간 내 기존 근무 초기화 후 생성
 });
 // 패턴을 바꾸면 시작 시각을 그 패턴 기본값으로 리셋
@@ -779,11 +779,7 @@ async function openGenerate() {
     $q.notify({ type: "warning", message: "이 팀에 배정된 인력이 없습니다. ‘팀’ 탭에서 먼저 배정하세요." });
     return;
   }
-  // 이번 달·다음 달에 걸친 공휴일 미리 로드 (휴일 옵션용 — 연말 경계 포함)
-  const now = new Date();
-  await loadHolidays(now.getFullYear());
-  await loadHolidays(new Date(now.getFullYear(), now.getMonth() + 2, 1).getFullYear());
-  showGenDialog.value = true; // 요양=패턴 선택 / 주간=휴일·시간 옵션
+  showGenDialog.value = true; // 요양=패턴 선택 / 주간=휴무·시간 옵션
 }
 
 // 다이얼로그 '생성' → 팀 유형에 따라 분기
@@ -813,21 +809,18 @@ async function resetSpan(dates: string[]) {
   pendingCreates.value = pendingCreates.value.filter((c) => c.shift_date < dates[0] || c.shift_date > dates[dates.length - 1]);
 }
 
-// 휴일 옵션에 따라 편성을 건너뛸 날인지
-function skipDay(d: Date, ds: string): boolean {
-  if (genForm.value.holidays === "all") return false;
-  if (holidayMap.value.has(ds)) return true;
-  return genForm.value.holidays === "skip_weekend_holiday" && (d.getDay() === 0 || d.getDay() === 6);
-}
 
-// 생성 스팬 전체의 기존 근무 + 주별 누적 시간 상태 (중복 방지·주 최대시간 한도용)
+// 생성 스팬 전체의 기존 근무 + 주별 누적 시간/근무일수 상태
+// (중복 방지 · 주 최대시간 한도 · 주당 휴무일 보장용)
 async function buildSpanState(dates: string[]) {
   const existing = new Set<string>();              // `${id}-${ds}` 이미 근무 있는 날
   const weekHours = new Map<string, number>();     // `${id}-${weekIdx}` → 누적 시간
+  const weekDays = new Map<string, number>();      // `${id}-${weekIdx}` → 근무 일수
   const wkOf = (ds: string) => weekIndexOf(new Date(ds + "T00:00:00"));
   const addHours = (id: string, ds: string, h: number) => {
     const k = `${id}-${wkOf(ds)}`;
     weekHours.set(k, (weekHours.get(k) ?? 0) + h);
+    weekDays.set(k, (weekDays.get(k) ?? 0) + 1);
   };
   try {
     const rows = await server.roster(dates[0], dates[dates.length - 1], selectedTeam.value || undefined);
@@ -844,7 +837,8 @@ async function buildSpanState(dates: string[]) {
     }
   }
   const hoursOf = (id: string, ds: string) => weekHours.get(`${id}-${wkOf(ds)}`) ?? 0;
-  return { existing, addHours, hoursOf };
+  const daysOf = (id: string, ds: string) => weekDays.get(`${id}-${wkOf(ds)}`) ?? 0;
+  return { existing, addHours, hoursOf, daysOf };
 }
 
 // 생성 대상 달(이번 달/다음 달)의 1일~말일
@@ -868,7 +862,8 @@ async function generateDayTeam(team: Team) {
     const { days, dates } = spanDates();
     if (genForm.value.resetExisting) await resetSpan(dates);
     const onLeave = await collectApprovedLeave(dates);
-    const { existing, addHours, hoursOf } = await buildSpanState(dates);
+    const { existing, addHours, hoursOf, daysOf } = await buildSpanState(dates);
+    const maxDays = 7 - genForm.value.restDays; // 주당 휴무일 보장
     const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
     const fresh: ScheduleEntry[] = [];
     const put = (w: OrgPerson, ds: string, tag: string) => {
@@ -880,19 +875,18 @@ async function generateDayTeam(team: Team) {
     let ptr = 0, shortfall = 0, overtime = 0;
     for (const d of days) {
       const ds = localDateStr(d);
-      if (skipDay(d, ds)) continue; // 휴일 옵션에 따라 제외
       let filled = 0, tries = 0;
       while (filled < required && tries < W.length) {
         const w = W[ptr % W.length]; ptr++; tries++;
         const key = `${w.id}-${ds}`;
-        if (onLeave.has(key) || existing.has(key) || hoursOf(w.id, ds) + hrs > maxH) continue;
+        if (onLeave.has(key) || existing.has(key) || hoursOf(w.id, ds) + hrs > maxH || daysOf(w.id, ds) >= maxDays) continue;
         put(w, ds, "");
         filled++;
       }
-      // 커버리지 우선: 한도를 넘더라도 매일 채운다 (휴가·이중근무 제외)
+      // 커버리지 우선: 시간 한도는 넘을 수 있지만(초과), 휴가·하루1근무·주당 휴무일은 절대 규칙
       if (filled < required) {
         const forced = W
-          .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
+          .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) && daysOf(w.id, ds) < maxDays)
           .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
         for (const w of forced) {
           if (filled >= required) break;
@@ -934,10 +928,12 @@ async function runPatternGeneration() {
     const { days, dates } = spanDates();
     if (genForm.value.resetExisting) await resetSpan(dates);
     const onLeave = await collectApprovedLeave(dates);
-    const { existing, addHours, hoursOf } = await buildSpanState(dates);
+    const { existing, addHours, hoursOf, daysOf } = await buildSpanState(dates);
+    const maxDays = 7 - genForm.value.restDays; // 주당 휴무일 보장 — 절대 규칙
 
     const canWork = (w: OrgPerson, ds: string, h: number) =>
-      !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) && hoursOf(w.id, ds) + h <= maxH;
+      !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) &&
+      hoursOf(w.id, ds) + h <= maxH && daysOf(w.id, ds) < maxDays;
     const fresh: ScheduleEntry[] = [];
     const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, tag: string) => {
       existing.add(`${w.id}-${ds}`);
@@ -951,7 +947,6 @@ async function runPatternGeneration() {
     let shortfall = 0, overtime = 0;
     for (const d of days) {
       const ds = localDateStr(d);
-      if (skipDay(d, ds)) continue; // 휴일 옵션에 따라 제외
       const period = Math.floor(weekIndexOf(d) / genForm.value.cycleWeeks); // 1~2주마다 주야 회전
       shifts.forEach((sh, si) => {
         const gi = (si + period) % pat.groups;       // 교대 si ← 조 gi (휴무 조는 자동으로 빠짐)
@@ -974,11 +969,11 @@ async function runPatternGeneration() {
             filled++;
           }
         }
-        // 3차 강제 배치: 24시간·매일 커버가 최우선 — 주 최대시간을 넘더라도 채운다.
-        //   (휴가와 하루 1근무만 절대 규칙. 초과분은 '초과'로 표기 + 경고)
+        // 3차 강제 배치: 24시간·매일 커버를 위해 주 최대시간은 넘을 수 있다('초과' 표기).
+        //   단, 휴가·하루 1근무·주당 휴무일은 절대 규칙 — 못 채우면 진짜 공백(충원 필요).
         if (filled < required) {
           const forced = genWorkers.value
-            .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
+            .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) && daysOf(w.id, ds) < maxDays)
             .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
           for (const w of forced) {
             if (filled >= required) break;
@@ -1466,12 +1461,11 @@ const showAlerts = ref(true);
           <div class="row q-gutter-sm">
             <q-select class="col" v-model="genForm.target" outlined dense emit-value map-options label="생성 대상"
               :options="[{ label: '다음 달', value: 'next' }, { label: '이번 달', value: 'this' }]" />
-            <q-select class="col" v-model="genForm.holidays" outlined dense emit-value map-options label="휴일 운영"
+            <q-select class="col" v-model="genForm.restDays" outlined dense emit-value map-options label="주당 휴무일 (인력별)"
               :options="[
-                { label: '매일 운영 (공휴일 포함)', value: 'all' },
-                { label: '공휴일 제외', value: 'skip_holiday' },
-                { label: '주말·공휴일 제외', value: 'skip_weekend_holiday' },
-              ]" />
+                { label: '주 1일 휴무', value: 1 },
+                { label: '주 2일 휴무', value: 2 },
+              ]" hint="시설은 매일(공휴일 포함) 운영 — 인력별 휴무 보장" />
           </div>
           <template v-if="genTeam?.team_type === 'residential'">
             <q-select v-model="genForm.pattern" :options="PATTERNS" option-value="value" option-label="label"
