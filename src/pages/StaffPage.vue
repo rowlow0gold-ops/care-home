@@ -42,8 +42,8 @@ const EMPLOYMENT_OPTIONS = [
 // 근무조 (북미식 2주 스케줄) — 직원마다 조가 고정되고 2주 단위로 발행된다
 const GROUP_OPTIONS = [
   { label: "미지정 (스케줄 제외)", value: null as string | null },
-  { label: "요양 12시간조 — 3일 근무·4일 휴무", value: "h12" },
-  { label: "요양 8시간 교대조 — 주 5일·주말 순환", value: "h8" },
+  { label: "요양 12시간조 — 3일 연속 런 ×2 (2주)", value: "h12" },
+  { label: "요양 8시간 교대조 — 2주 10일", value: "h8" },
 ];
 const GROUP_KO: Record<string, string> = { h12: "12시간조", h8: "8시간조" };
 const SHIFT12_OPTIONS = [
@@ -400,10 +400,10 @@ onMounted(() => { load(); });
             outlined dense emit-value map-options />
           <q-select v-if="prefsForm.group === 'h12'" v-model="prefsForm.shift" :options="SHIFT12_OPTIONS"
             label="교대 (12시간)" outlined dense emit-value map-options
-            hint="3일 연속 근무 후 4일 휴무 — 주 36시간" />
+            hint="3일 연속 런 ×2 (2주) — 주말은 2주에 1일만, 근무 요일은 기간마다 회전" />
           <q-select v-else-if="prefsForm.group === 'h8'" v-model="prefsForm.shift"
             :options="SHIFT8_OPTIONS" label="교대 (8시간 고정)" outlined dense emit-value map-options
-            hint="주 5일 근무 (휴무 2일 보장) — 평주는 토·일 휴무, 3주마다 주말 의무 근무(순환)" />
+            hint="2주 10일 근무 — 주말은 2주에 1일만(슬롯 로테이션), 그 주는 6일 근무 가능" />
         </q-card-section>
         <q-card-actions align="right" class="q-px-md q-pb-md">
           <q-btn flat label="취소" v-close-popup />
