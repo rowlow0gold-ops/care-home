@@ -418,7 +418,8 @@ async function loadPresets() {
       genForm.value.restDays = gf.restDays ?? 1;
       genForm.value.resetExisting = gf.resetExisting ?? true;
       genForm.value.target = gf.target ?? "next";
-      genConfigured.value = true;
+      // genConfigured 는 복원하지 않는다 — 팔레트는 항상 비어 있게 시작하고,
+      // 이번 세션에서 자동 생성을 실행해야 근무 유형이 나타난다.
     }
   } catch { customPresets.value = []; }
 }
