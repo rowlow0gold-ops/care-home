@@ -28,7 +28,7 @@ const canEdit = computed(() => session.canEdit);
 const canDelete = computed(() => session.canDelete);
 
 // ── View mode ─────────────────────────────────────────────────────────────────
-const viewMode = ref<"week" | "month">("week");
+const viewMode = ref<"week" | "month">("month"); // 기본 월간 보기
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface ScheduleEntry {
@@ -437,6 +437,28 @@ async function savePresets() {
   await s.save();
 }
 function isCustom(p: Preset) { return customPresets.value.some((c) => c.label === p.label); }
+
+// 화면의 근무(저장된 일정 포함)에서 서로 다른 시간대를 근무 유형으로 가져온다.
+function importTypesFromSchedule() {
+  const seen = new Map<string, Preset>();
+  for (const e of entries.value) {
+    const key = `${e.shift_start}-${e.shift_end}`;
+    if (seen.has(key)) continue;
+    const h = parseInt(e.shift_start.slice(0, 2), 10);
+    const name = h >= 5 && h < 12 ? "주간" : h >= 12 && h < 18 ? "오후" : "야간";
+    seen.set(key, { label: `${name} (${e.shift_start}–${e.shift_end})`, start: e.shift_start, end: e.shift_end, hours: e.shift_hours });
+  }
+  const fresh = [...seen.values()].filter(
+    (p) => !allPresets.value.some((x) => (x.start === p.start && x.end === p.end) || x.label === p.label),
+  );
+  if (!fresh.length) {
+    $q.notify({ type: "info", message: "가져올 근무 유형이 없습니다. (근무가 없거나 이미 등록됨)" });
+    return;
+  }
+  customPresets.value = [...customPresets.value, ...fresh];
+  savePresets();
+  $q.notify({ type: "positive", message: `근무 유형 ${fresh.length}개를 가져왔습니다.` });
+}
 
 // ── Add shift ─────────────────────────────────────────────────────────────────
 const showAdd    = ref(false);
@@ -1189,7 +1211,16 @@ const showAlerts = ref(true);
           />
         </div>
         <q-btn
-          v-if="genConfigured"
+          v-if="entries.length"
+          outline no-caps dense color="grey-8" icon="o_download"
+          label="근무 유형 가져오기"
+          class="palette-custom-btn"
+          @click="importTypesFromSchedule"
+        >
+          <q-tooltip>화면의 근무에서 시간대를 추출해 유형으로 등록합니다.</q-tooltip>
+        </q-btn>
+        <q-btn
+          v-if="allPresets.length"
           outline no-caps dense color="grey-8" icon="o_add"
           label="근무 유형 추가"
           class="palette-custom-btn"
