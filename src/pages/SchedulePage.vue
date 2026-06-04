@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // ── 스케쥴러 — 북미식 2주(Biweekly) 스케줄 ────────────────────────────────────
 // 북미 요양원은 스케줄을 2주 단위로 발행한다. 직원은 근무조가 고정:
-//   · 요양 12시간조 — Day 07:00–19:30 / Night 19:00–07:30, 3일 연속 근무·4일 휴무
-//   · 요양 8시간 교대조 — 고정 쉬프트(주간/오후/야간), 주 5일
-//   · 요양 알바조 — 지정 요일에만 (예: 일요일만)
+//   · 요양 12시간조 — Day 07:00–19:30 / Night 19:00–07:30, 3일 연속 근무·4일 휴무 보장
+//   · 요양 8시간 교대조 — 고정 쉬프트(주간/오후/야간), 주 5일·휴무 2일 보장.
+//     주말은 순환 근무(Rotational Commitment): 3주마다 한 번 토·일 의무 근무,
+//     그 주는 주중 연속 2일 휴무. 평주는 토·일 휴무. 달력 고정이라 미리 알 수 있다.
 // '발행'은 위 규칙으로 2주치 근무를 계산해 서버에 확정 저장(solid data)한다.
 // 인원 매칭: 입소(요양) 어르신 실시간 수 기준 1:10 — 매 시간 커버리지 검사.
 import { ref, computed, onMounted, watch } from "vue";
@@ -49,9 +50,7 @@ const BLOCKS: Block[] = [
   { key: "n8",  group: "h8",  shift: "night",   label: "8시간 야간 23:00–07:00",   short: "8야", start: "23:00", end: "07:00", hours: 8,    color: "blue-2",   text: "blue-10" },
 ];
 function blockFor(group: string, shift: string): Block {
-  // 알바조는 8시간 블록을 쓴다
-  const g = group === "pt" ? "h8" : group;
-  return BLOCKS.find((b) => b.group === g && b.shift === shift) ?? BLOCKS[2];
+  return BLOCKS.find((b) => b.group === group && b.shift === shift) ?? BLOCKS[2];
 }
 function classify(e: RosterEntry): Block {
   const b = BLOCKS.find((x) => x.start === e.shift_start && x.end === e.shift_end);
@@ -119,11 +118,10 @@ function goToday() { periodStart.value = periodStartOf(new Date()); }
 
 // ── 그룹 구성 요약 ────────────────────────────────────────────────────────────
 const groupStats = computed(() => {
-  const c = { h12d: 0, h12n: 0, h8: 0, pt: 0, none: 0 };
+  const c = { h12d: 0, h12n: 0, h8: 0, none: 0 };
   for (const p of caregivers.value) {
     if (p.shift_group === "h12") (p.preferred_shift === "night" ? c.h12n++ : c.h12d++);
     else if (p.shift_group === "h8") c.h8++;
-    else if (p.shift_group === "pt") c.pt++;
     else c.none++;
   }
   return c;
@@ -189,52 +187,30 @@ const published = computed(() => entries.value.length > 0);
 
 // ── 2주 스케줄 발행 — 근무조 규칙으로 계산해 서버에 확정 저장 ────────────────
 const publishing = ref(false);
-async function collectLeave(dates: string[]): Promise<Set<string>> {
-  const set = new Set<string>();
-  try {
-    let p = 1, fetched = 0, total = Infinity;
-    while (fetched < total && p <= 10) {
-      const res = await server.leaveRequestsPaged({ status: "approved", page: p, page_size: 100 });
-      total = res.total;
-      for (const lr of res.items) for (const ds of dates) if (ds >= lr.start_date && ds <= lr.end_date) set.add(`${lr.user_id}-${ds}`);
-      fetched += res.items.length;
-      if (!res.items.length) break;
-      p++;
-    }
-  } catch { /* 휴가 조회 실패 시 제외 없이 발행 */ }
-  return set;
-}
 
 // 균등 배치 — 시설은 매일 안정적으로 돌아가야 한다 (어르신 케어 비율 유지).
-// 직원마다 '근무 창(window)'을 골라 준다:
-//   12시간조 = 연속 3일 창(이후 4일 휴무) · 8시간조 = 연속 2일 휴무 창(주 5일 근무)
-// 창은 (1) 휴가와 겹쳐 근무일 손실이 가장 적고 (2) 그날 전체 인원이 가장 적은
-// 날을 채우는 쪽으로 고른다 → 휴가가 금·토에 60명 몰려도 일별 총원이 평탄해진다.
-// 같은 창을 2주 내내 유지해 개인 리듬(3 on 4 off)이 고정된다.
-function assignWindows(
-  members: OrgPerson[], group: "h12" | "h8", weeks: string[][], onLeave: Set<string>,
+//
+// 12시간조: 연속 3일 근무 창(이후 4일 휴무 보장). 창은 그날 전체 인원이 가장
+//   적은 날을 채우는 쪽으로 골라(공유 카운터) 일별 총원을 평탄하게 만든다.
+//   같은 창을 2주 내내 유지해 개인 리듬(3 on 4 off)이 고정된다.
+//
+// 8시간조: 주 5일 근무·휴무 2일 보장 + 주말 순환(Rotational Commitment).
+//   조원을 3개 코호트로 나누고, 달력 고정 주차(weekIdx % 3)와 일치하는 코호트가
+//   그 주의 토·일을 의무 근무한다. 주말 당번 주는 주중 연속 2일 휴무, 평주는
+//   토·일 휴무로 월~금 근무 — 규칙이 달력에 고정되어 미리 알 수 있다.
+function assignH12(
+  members: OrgPerson[], weeks: string[][],
   counts: Map<string, number>, assigned: Map<string, OrgPerson[]>,
 ) {
-  const avail = (p: OrgPerson, ds: string) => !onLeave.has(`${p.id}-${ds}`);
   for (const p of members) {
-    let best: string[] | null = null;
-    let bestWorked = -1, bestLoad = Infinity;
+    let best: string[] = [], bestLoad = Infinity;
     for (let s0 = 0; s0 < 7; s0++) {
       const days: string[] = [];
-      for (const week of weeks) {
-        if (group === "h12") {
-          for (let k = 0; k < 3; k++) days.push(week[(s0 + k) % 7]);
-        } else {
-          for (let d = 0; d < 7; d++) if (d !== s0 && d !== (s0 + 1) % 7) days.push(week[d]);
-        }
-      }
-      const workable = days.filter((ds) => avail(p, ds));
-      const load = workable.reduce((sum, ds) => sum + (counts.get(ds) ?? 0), 0) / Math.max(1, workable.length);
-      if (workable.length > bestWorked || (workable.length === bestWorked && load < bestLoad)) {
-        best = workable; bestWorked = workable.length; bestLoad = load;
-      }
+      for (const week of weeks) for (let k = 0; k < 3; k++) days.push(week[(s0 + k) % 7]);
+      const load = days.reduce((sum, ds) => sum + (counts.get(ds) ?? 0), 0);
+      if (load < bestLoad) { best = days; bestLoad = load; }
     }
-    for (const ds of best ?? []) {
+    for (const ds of best) {
       counts.set(ds, (counts.get(ds) ?? 0) + 1);
       if (!assigned.has(ds)) assigned.set(ds, []);
       assigned.get(ds)!.push(p);
@@ -242,16 +218,44 @@ function assignWindows(
   }
 }
 
-function buildEntries(onLeave: Set<string>): UpsertRoster[] {
+function assignH8(
+  members: OrgPerson[], weeks: string[][],
+  counts: Map<string, number>, assigned: Map<string, OrgPerson[]>,
+) {
+  // 코호트는 id 순으로 고정 — 발행할 때마다 같은 사람이 같은 주말을 맡는다
+  const sorted = [...members].sort((a, b) => a.id.localeCompare(b.id));
+  const put = (p: OrgPerson, ds: string) => {
+    counts.set(ds, (counts.get(ds) ?? 0) + 1);
+    if (!assigned.has(ds)) assigned.set(ds, []);
+    assigned.get(ds)!.push(p);
+  };
+  for (const week of weeks) {
+    const weekIdx = Math.floor((new Date(week[0] + "T00:00:00").getTime() - EPOCH.getTime()) / (7 * 86400000));
+    const duty = ((weekIdx % 3) + 3) % 3;
+    // 주말 당번의 주중 휴무(연속 2일)는 직원별로 분산해 주중도 평탄하게
+    const pairs = [[1, 2], [2, 3], [3, 4], [4, 5]]; // 월화/화수/수목/목금
+    let pi = 0;
+    sorted.forEach((p, idx) => {
+      if (idx % 3 === duty) {
+        const rest = pairs[pi % pairs.length]; pi++;
+        for (let d = 0; d < 7; d++) if (!rest.includes(d)) put(p, week[d]); // 일+토 포함 5일
+      } else {
+        for (let d = 1; d <= 5; d++) put(p, week[d]); // 월~금, 토·일 휴무
+      }
+    });
+  }
+}
+
+function buildEntries(): UpsertRoster[] {
   const out: UpsertRoster[] = [];
   const dates = periodDays.value.map(localDateStr);
-  // 고정 조 단위(블록별)로 주마다 균등 배치
   const SUBGROUPS: Array<{ group: string; shift: string; note: string }> = [
+    { group: "h8",  shift: "day",     note: "8시간조 주간 (주 5일·주말 순환)" },
+    { group: "h8",  shift: "evening", note: "8시간조 오후 (주 5일·주말 순환)" },
+    { group: "h8",  shift: "night",   note: "8시간조 야간 (주 5일·주말 순환)" },
+    // 12시간조는 마지막 — 8시간조의 주말 패턴을 본 뒤 빈 날을 메워 평탄화한다
     { group: "h12", shift: "day",     note: "12시간조 Day (3일 근무·4일 휴무)" },
     { group: "h12", shift: "night",   note: "12시간조 Night (3일 근무·4일 휴무)" },
-    { group: "h8",  shift: "day",     note: "8시간조 주간 (주 5일)" },
-    { group: "h8",  shift: "evening", note: "8시간조 오후 (주 5일)" },
-    { group: "h8",  shift: "night",   note: "8시간조 야간 (주 5일)" },
   ];
   const weeks = [dates.slice(0, 7), dates.slice(7, 14)];
   const counts = new Map<string, number>(); // 일별 총원 — 조를 가로질러 공유해 평탄화
@@ -264,23 +268,14 @@ function buildEntries(onLeave: Set<string>): UpsertRoster[] {
     if (!members.length) continue;
     const b = blockFor(sg.group, sg.shift);
     const assigned = new Map<string, OrgPerson[]>();
-    assignWindows(members, sg.group as "h12" | "h8", weeks, onLeave, counts, assigned);
+    if (sg.group === "h8") assignH8(members, weeks, counts, assigned);
+    else assignH12(members, weeks, counts, assigned);
     assigned.forEach((list, ds) => {
       for (const p of list) {
         out.push({ user_id: p.id, shift_date: ds, shift_start: b.start, shift_end: b.end, shift_hours: b.hours, notes: sg.note });
       }
     });
   }
-  // 알바조 — 지정 요일 계약은 그대로 (옮길 수 없다)
-  periodDays.value.forEach((d, di) => {
-    const ds = dates[di];
-    for (const p of caregivers.value) {
-      if (p.shift_group !== "pt" || onLeave.has(`${p.id}-${ds}`)) continue;
-      if (!p.work_days?.includes(d.getDay())) continue;
-      const b = blockFor("pt", p.preferred_shift ?? "day");
-      out.push({ user_id: p.id, shift_date: ds, shift_start: b.start, shift_end: b.end, shift_hours: b.hours, notes: "알바조 (지정 요일)" });
-    }
-  });
   return out;
 }
 
@@ -292,8 +287,7 @@ async function publish() {
   const doIt = async () => {
     publishing.value = true;
     try {
-      const onLeave = await collectLeave(periodDays.value.map(localDateStr));
-      const list = buildEntries(onLeave);
+      const list = buildEntries();
       const res = await server.rosterBulk(localDateStr(periodStart.value), localDateStr(periodEnd.value), list);
       await loadEntries();
       $q.notify({ type: "positive", timeout: 6000,
@@ -360,7 +354,7 @@ onMounted(loadAll);
       <div class="col">
         <div class="text-h5 text-weight-bold">스케쥴러 — 2주 근무표</div>
         <div class="text-caption text-grey-6">
-          북미식 2주 단위 발행 · 12시간조(3일 근무·4일 휴무) / 8시간 교대조(주 5일) / 알바조(지정 요일)
+          북미식 2주 단위 발행 · 12시간조 3일 근무·4일 휴무 / 8시간조 주 5일·휴무 2일, 주말은 3주 순환 근무
         </div>
       </div>
       <div class="col-auto row items-center q-gutter-sm">
@@ -370,7 +364,7 @@ onMounted(loadAll);
         <q-btn flat round dense icon="o_chevron_right" @click="next" />
         <q-btn v-if="canPublish && !published" color="primary" unelevated icon="o_publish" :loading="publishing"
           label="2주 스케줄 발행" @click="publish">
-          <q-tooltip>근무조 규칙으로 2주치 근무를 계산해 확정 저장합니다. 승인된 휴가는 제외.</q-tooltip>
+          <q-tooltip>근무조 규칙(휴무 보장·주말 순환)으로 2주치 근무를 계산해 확정 저장합니다.</q-tooltip>
         </q-btn>
         <q-badge v-else-if="published" color="green-2" text-color="green-10" class="q-pa-sm">
           <q-icon name="o_verified" size="14px" class="q-mr-xs" /> 발행 완료
@@ -385,8 +379,8 @@ onMounted(loadAll);
           <template #avatar><q-icon name="o_diversity_3" /></template>
           입소 어르신 <b>{{ elders }}명</b> (실시간) → 매 시간 요양보호사 <b>{{ required }}명</b> 필요 (1:10)<br />
           <span class="text-caption">
-            조 구성: 12시간조 {{ groupStats.h12d + groupStats.h12n }}명 (Day {{ groupStats.h12d }} / Night {{ groupStats.h12n }})
-            · 8시간조 {{ groupStats.h8 }}명 · 알바조 {{ groupStats.pt }}명
+            조 구성: 12시간조 {{ groupStats.h12d + groupStats.h12n }}명 (Day {{ groupStats.h12d }} / Night {{ groupStats.h12n }}, 휴무 4일/주)
+            · 8시간조 {{ groupStats.h8 }}명 (휴무 2일/주 · 3주마다 주말 순환)
             <template v-if="groupStats.none"> · <span class="text-red-8">미지정 {{ groupStats.none }}명</span></template>
           </span>
         </q-banner>
