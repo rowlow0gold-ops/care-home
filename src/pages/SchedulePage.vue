@@ -170,10 +170,17 @@ let tempSeq = 0;
 function tempId() { return `new-${++tempSeq}`; }
 function isNew(id: string) { return id.startsWith("new-"); }
 
+// 월간 보기는 그리드 전체(앞뒤 달 포함)를 로드해 다른 달 데이터도 표시한다.
+const gridStartStr = computed(() => localDateStr(monthGrid.value[0][0]));
+const gridEndStr = computed(() => {
+  const lastWeek = monthGrid.value[monthGrid.value.length - 1];
+  return localDateStr(lastWeek[lastWeek.length - 1]);
+});
+
 // Rebuild the visible `entries` from the last server fetch + the overlay.
 function rebuild() {
-  const start = viewMode.value === "week" ? weekStartStr.value : monthStartStr.value;
-  const end   = viewMode.value === "week" ? weekEndStr.value   : monthEndStr.value;
+  const start = viewMode.value === "week" ? weekStartStr.value : gridStartStr.value;
+  const end   = viewMode.value === "week" ? weekEndStr.value   : gridEndStr.value;
   const base = serverRows.value
     .filter((e) => !pendingDeletes.value.has(e.id))
     .map((e) => pendingUpdates.value.get(e.id) ?? e);
@@ -313,8 +320,8 @@ function weekHours(staffId: string): number {
 async function loadSchedule() {
   loading.value = true;
   try {
-    const start = viewMode.value === "week" ? weekStartStr.value : monthStartStr.value;
-    const end   = viewMode.value === "week" ? weekEndStr.value   : monthEndStr.value;
+    const start = viewMode.value === "week" ? weekStartStr.value : gridStartStr.value;
+    const end   = viewMode.value === "week" ? weekEndStr.value   : gridEndStr.value;
     loadHolidays(Number(start.slice(0, 4)));
     loadHolidays(Number(end.slice(0, 4)));
     const rows = await server.roster(start, end, selectedTeam.value || undefined);
@@ -710,6 +717,10 @@ function toggleExpand(date: Date) {
   expandedDays.value = new Set(expandedDays.value);
 }
 function isExpanded(date: Date) { return expandedDays.value.has(localDateStr(date)); }
+// 다른 달 칸의 근무는 표시만 — 수정하려면 그 달로 이동해야 한다.
+function notifyOtherMonth() {
+  $q.notify({ type: "info", message: "다른 달의 근무입니다. 해당 달로 이동해서 수정하세요." });
+}
 
 // ── Delete shift (local overlay) ────────────────────────────────────────────
 function deleteShift(entry: ScheduleEntry) {
@@ -1362,7 +1373,7 @@ const showAlerts = ref(true);
               'month-day--today': isToday(date),
               'month-day--drop':  isDragging && dropTargetKey === dropKey(null, date),
             }"
-            :data-cell-key="dropKey(null, date)"
+            :data-cell-key="date.getMonth() === currentMonth.getMonth() ? dropKey(null, date) : undefined"
             :data-date="localDateStr(date)"
           >
             <div class="row items-center no-wrap">
@@ -1376,19 +1387,19 @@ const showAlerts = ref(true);
               <div
                 v-if="isExpanded(date) || ei < 3"
                 class="month-shift-bar"
-                :class="[`shift-chip--${shiftColor(entry)}`, { 'shift-chip--clickable': canEdit, 'shift-chip--dropped': droppedId === entry.id }]"
-                @pointerdown.stop="canEdit && startDrag($event, { kind: 'entry', id: entry.id }, shiftLabel(entry), shiftColor(entry))"
-                @click.stop="openEditDialog(entry)"
+                :class="[`shift-chip--${shiftColor(entry)}`, { 'shift-chip--clickable': canEdit && date.getMonth() === currentMonth.getMonth(), 'shift-chip--dropped': droppedId === entry.id }]"
+                @pointerdown.stop="canEdit && date.getMonth() === currentMonth.getMonth() && startDrag($event, { kind: 'entry', id: entry.id }, shiftLabel(entry), shiftColor(entry))"
+                @click.stop="date.getMonth() === currentMonth.getMonth() ? openEditDialog(entry) : notifyOtherMonth()"
               >
                 <span class="month-shift-name">{{ entry.staff_name.split(' ')[0] }}</span>
                 <span class="month-shift-time">{{ entry.shift_start }}</span>
                 <q-btn
-                  v-if="canDelete"
+                  v-if="canDelete && date.getMonth() === currentMonth.getMonth()"
                   flat round dense icon="o_close" size="xs"
                   class="shift-delete month-delete"
                   @click.stop="deleteShift(entry)"
                 />
-                <q-tooltip>{{ entry.staff_name }} · {{ shiftLabel(entry) }}<span v-if="entry.notes"> · {{ entry.notes }}</span></q-tooltip>
+                <q-tooltip>{{ entry.staff_name }} · {{ shiftLabel(entry) }}<span v-if="entry.notes"> · {{ entry.notes }}</span><span v-if="date.getMonth() !== currentMonth.getMonth()"> · 다른 달 (이동해서 수정)</span></q-tooltip>
               </div>
             </template>
             <div
