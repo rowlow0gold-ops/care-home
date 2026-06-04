@@ -415,11 +415,10 @@ async function loadPresets() {
     const s = await presetsStore();
     customPresets.value = (await s.get<Preset[]>("custom_presets")) ?? [];
     // 저장된 자동 생성 설정 복원 → 근무 유형 팔레트에 반영
-    const gf = await s.get<{ pattern: string; cycleWeeks: 1 | 2; maxWeekHours: number; shiftStarts: string[]; restDays?: 1 | 2; resetExisting?: boolean; target?: "this" | "next" }>("gen_form");
-    if (gf?.pattern && Array.isArray(gf.shiftStarts)) {
+    const gf = await s.get<{ pattern: string; maxWeekHours: number; shiftStarts: string[]; restDays?: 1 | 2; resetExisting?: boolean; target?: "this" | "next" }>("gen_form");
+    if (gf?.pattern && Array.isArray(gf.shiftStarts) && PATTERNS.some((x) => x.value === gf.pattern)) {
       genForm.value.pattern = gf.pattern;
       await nextTick(); // 패턴 watcher 가 shiftStarts 를 리셋한 뒤에 복원
-      genForm.value.cycleWeeks = gf.cycleWeeks ?? 1;
       genForm.value.maxWeekHours = gf.maxWeekHours ?? 52;
       genForm.value.shiftStarts = gf.shiftStarts;
       genForm.value.restDays = gf.restDays ?? 1;
@@ -743,38 +742,39 @@ const generating = ref(false);
 const showGenDialog = ref(false);
 
 interface PatShift { name: string; start: string; end: string }
-interface GenPattern { value: string; label: string; groups: number; shifts: PatShift[] }
-const SHIFTS_12 = [
-  { name: "주간", start: "07:00", end: "19:00" },
-  { name: "야간", start: "19:00", end: "07:00" },
-];
-const SHIFTS_8 = [
-  { name: "주간", start: "07:00", end: "15:00" },
-  { name: "오후", start: "15:00", end: "23:00" },
-  { name: "야간", start: "23:00", end: "07:00" },
-];
+interface GenPattern { value: string; label: string; groups: number; cycle: number[]; defaultMaxH: number; shifts: PatShift[] }
+// 현장에서 실제로 쓰는 두 가지 교대 패턴 (개인별 사이클; -1 = 휴무):
+//   주주야야비비: 주간(09-18) 2일 → 야간(18-익일09) 2일 → 휴무 2일, 6일 주기 / 6개 조
+//   퐁당당:      24시간(09-익일09) 근무 → 휴무 2일, 3일 주기 / 3개 조
 const PATTERNS: GenPattern[] = [
-  { value: "2x12", label: "12/12 · 2교대 (주간/야간 12시간)", groups: 2, shifts: SHIFTS_12 },
-  { value: "3x8",  label: "8/8/8 · 3교대 (주간/오후/야간 8시간)", groups: 3, shifts: SHIFTS_8 },
+  { value: "jjyybb", label: "주주야야비비 — 주간2·야간2·휴무2 (6일 주기)", groups: 6,
+    cycle: [0, 0, 1, 1, -1, -1], defaultMaxH: 60,
+    shifts: [{ name: "주간", start: "09:00", end: "18:00" }, { name: "야간", start: "18:00", end: "09:00" }] },
+  { value: "pdd", label: "퐁당당 — 24시간 근무 후 2일 휴무 (3일 주기)", groups: 3,
+    cycle: [0, -1, -1], defaultMaxH: 72,
+    shifts: [{ name: "당직", start: "09:00", end: "09:00" }] },
 ];
-const SHIFT_NAMES_2 = ["주간", "야간"];
-const SHIFT_NAMES_3 = ["주간", "오후", "야간"];
 const genForm = ref({
-  pattern: "2x12", cycleWeeks: 1 as 1 | 2, maxWeekHours: 52, shiftStarts: ["07:00", "19:00"],
+  pattern: "jjyybb", maxWeekHours: 60, shiftStarts: ["09:00", "18:00"],
   target: "next" as "this" | "next", // 생성 대상: 이번 달 / 다음 달 (기본 다음 달)
   restDays: 1 as 1 | 2, // 주당 휴무일(인력별) — 절대 규칙. 시설은 매일(공휴일 포함) 운영
   resetExisting: true, // 생성 기간 내 기존 근무 초기화 후 생성
 });
-// 패턴을 바꾸면 시작 시각을 그 패턴 기본값으로 리셋
+// 패턴을 바꾸면 시작 시각·주 최대시간을 그 패턴 기본값으로 리셋
 watch(() => genForm.value.pattern, () => {
   const pat = PATTERNS.find((p) => p.value === genForm.value.pattern) ?? PATTERNS[0];
   genForm.value.shiftStarts = pat.shifts.map((s) => s.start);
+  genForm.value.maxWeekHours = pat.defaultMaxH;
 });
-// 커스텀 시작 시각 → 교대 파생. 종료 = 다음 교대의 시작 (8/8/8 또는 12/12, 휴게 미반영)
+// 커스텀 시작 시각 → 교대 파생. 종료 = 다음 교대의 시작 (1교대=24시간 당직)
 const genShifts = computed<PatShift[]>(() => {
+  const pat = genPattern.value;
   const starts = genForm.value.shiftStarts;
-  const names = starts.length === 2 ? SHIFT_NAMES_2 : SHIFT_NAMES_3;
-  return starts.map((s, i) => ({ name: names[i] ?? `교대${i + 1}`, start: s, end: starts[(i + 1) % starts.length] }));
+  return starts.map((s, i) => ({
+    name: pat.shifts[i]?.name ?? `교대${i + 1}`,
+    start: s,
+    end: starts.length === 1 ? s : starts[(i + 1) % starts.length],
+  }));
 });
 const genWorkers = ref<OrgPerson[]>([]);
 const genTeam = computed(() => teams.value.find((t) => t.id === selectedTeam.value) ?? null);
@@ -788,7 +788,12 @@ const genPattern = computed(() => PATTERNS.find((p) => p.value === genForm.value
 const genGroupMin = computed(() => Math.floor(genWorkers.value.length / genPattern.value.groups));
 const genGroupMax = computed(() => Math.ceil(genWorkers.value.length / genPattern.value.groups));
 // 조당 최소 인원이 교대당 필요 인원(1:10)보다 적으면 인력 부족.
-const genShort = computed(() => genGroupMin.value < genRequired.value);
+// 한 교대에 동시에 투입되는 조 수 — 주주야야비비 2개 조, 퐁당당 1개 조
+const genDutyGroups = computed(() => {
+  const cyc = genPattern.value.cycle;
+  return Math.min(...genPattern.value.shifts.map((_, si) => cyc.filter((c) => c === si).length));
+});
+const genShort = computed(() => genGroupMin.value * genDutyGroups.value < genRequired.value);
 // 주당 필요 시간(24h×7×필요인원) vs 가용 시간(인력×주 최대시간) — 부족하면 초과근무 발생.
 const genNeedHours = computed(() => 24 * 7 * genRequired.value);
 const genCapHours = computed(() => genWorkers.value.length * Math.max(8, genForm.value.maxWeekHours || 52));
@@ -1004,20 +1009,34 @@ async function runPatternGeneration() {
         notes: `${team.name} ${sh.name}${tag}` });
     };
 
+    // 조 g 의 d일차 근무: cycle[(dayIdx + g) % len] (0=주간, 1=야간/당직, -1=휴무).
+    // 주주야야비비(6조)는 매일 주간 2조·야간 2조·휴무 2조, 퐁당당(3조)은 당직 1조·휴무 2조.
+    const cyc = pat.cycle, cl = cyc.length;
+    const epoch = new Date(2026, 0, 4); // 일요일 기준점 — 달력에 고정된 회전
+    const dayIndexOf = (d: Date) =>
+      Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - epoch.getTime()) / 86400000);
     const ptrs = groups.map(() => 0);
     let shortfall = 0, overtime = 0;
     for (const d of days) {
       const ds = localDateStr(d);
-      const period = Math.floor(weekIndexOf(d) / genForm.value.cycleWeeks); // 1~2주마다 주야 회전
+      const dayIdx = dayIndexOf(d);
       shifts.forEach((sh, si) => {
-        const gi = (si + period) % pat.groups;       // 교대 si ← 조 gi (휴무 조는 자동으로 빠짐)
-        const g = groups[gi];
-        let filled = 0, tries = 0;
-        while (filled < required && tries < g.length) {
-          const w = g[ptrs[gi] % g.length]; ptrs[gi]++; tries++;
-          if (!canWork(w, ds, sh.hours)) continue;
-          assign(w, ds, sh, `(${["A", "B", "C", "D"][gi] ?? gi + 1}조)`, filled);
-          filled++;
+        // 오늘 이 교대(si)에 배정된 조들 — 각 조의 사이클 위치로 판정
+        const onDuty: number[] = [];
+        for (let g = 0; g < pat.groups; g++) {
+          if (cyc[(((dayIdx + g) % cl) + cl) % cl] === si) onDuty.push(g);
+        }
+        let filled = 0;
+        for (const gi of onDuty) {
+          const g = groups[gi];
+          let tries = 0;
+          while (filled < required && tries < g.length) {
+            const w = g[ptrs[gi] % g.length]; ptrs[gi]++; tries++;
+            if (!canWork(w, ds, sh.hours)) continue;
+            assign(w, ds, sh, `(${"ABCDEF"[gi] ?? gi + 1}조)`, filled);
+            filled++;
+          }
+          if (filled >= required) break;
         }
         // 2차 백필: 휴가·한도로 부족하면 그날 쉬는 인력 중 누적시간 적은 순으로 대체
         if (filled < required) {
@@ -1172,7 +1191,7 @@ const showAlerts = ref(true);
       <!-- Draft controls -->
       <div v-if="canCreate" class="col-auto q-gutter-xs">
         <q-btn outline color="primary" icon="o_auto_awesome" label="자동 생성" dense :loading="generating" @click="openGenerate">
-          <q-tooltip>대상 달(이번 달/다음 달)의 근무를 24시간 교대 패턴으로 생성합니다. 주야 변경 주기·휴일 옵션·1:10 인원 자동 배치.</q-tooltip>
+          <q-tooltip>대상 달(이번 달/다음 달)의 근무를 24시간 교대 패턴으로 생성합니다. 주주야야비비·퐁당당 패턴, 1:10 인원 자동 배치.</q-tooltip>
         </q-btn>
         <q-btn color="primary" icon="o_save" label="저장" unelevated dense :disable="!dirty" :loading="saving" @click="saveDraft" />
         <q-btn outline color="grey-8" icon="o_undo" label="되돌리기" dense :disable="!dirty" @click="rollbackDraft" />
@@ -1551,14 +1570,10 @@ const showAlerts = ref(true);
           <template v-if="genTeam?.team_type === 'residential'">
             <q-select v-model="genForm.pattern" :options="PATTERNS" option-value="value" option-label="label"
               emit-value map-options outlined dense label="교대 패턴" />
-            <div class="row q-gutter-sm">
-              <q-select class="col" v-model="genForm.cycleWeeks" outlined dense emit-value map-options label="주야 변경 주기"
-                :options="[{ label: '1주마다 변경', value: 1 }, { label: '2주마다 변경', value: 2 }]" />
-              <q-input class="col" v-model.number="genForm.maxWeekHours" type="number" outlined dense
-                label="주 최대 근무시간" suffix="h" hint="기본 52h — 한도 내에서 휴무 자동 발생" />
-            </div>
+            <q-input v-model.number="genForm.maxWeekHours" type="number" outlined dense
+              label="주 최대 근무시간" suffix="h" hint="기본 52h — 한도 내에서 휴무 자동 발생" />
             <div>
-              <div class="text-caption text-grey-7 q-mb-xs">교대 시작 시각 — 종료는 다음 교대 시작 (24시간 자동 커버)</div>
+              <div class="text-caption text-grey-7 q-mb-xs">교대 시작 시각{{ genForm.shiftStarts.length === 1 ? ' — 24시간 당직 (익일 같은 시각 종료)' : ' — 종료는 다음 교대 시작' }}</div>
               <div class="row q-gutter-sm">
                 <q-input v-for="(s, i) in genForm.shiftStarts" :key="i" class="col" v-model="genForm.shiftStarts[i]"
                   :label="genShifts[i]?.name" outlined dense mask="##:##" hint="HH:MM" />
@@ -1576,10 +1591,12 @@ const showAlerts = ref(true);
             :class="genShort ? 'bg-red-1 text-red-9' : genOvertimeExpected ? 'bg-orange-1 text-orange-10' : 'bg-green-1 text-green-9'">
             <template #avatar><q-icon :name="genShort || genOvertimeExpected ? 'o_warning' : 'o_check_circle'" /></template>
             어르신 {{ genElders }}명 → 교대당 <b>{{ genRequired }}명</b> 필요 (1:10)<br />
-            배정 인력 {{ genWorkers.length }}명 → {{ genPattern.groups }}개 조, 조당 {{ genGroupMin }}~{{ genGroupMax }}명<br />
+            배정 인력 {{ genWorkers.length }}명 → {{ genPattern.groups }}개 조 (조당 {{ genGroupMin }}~{{ genGroupMax }}명),
+            교대당 {{ genDutyGroups }}개 조 동시 근무<br />
             주당 필요 {{ genNeedHours }}h / 가용 {{ genCapHours }}h
             <template v-if="genShort">
-              <br /><b>⚠ 인력 부족:</b> 조당 최소 {{ genRequired }}명이 필요합니다.
+              <br /><b>⚠ 인력 부족:</b> 동시 근무 인원({{ genDutyGroups }}개 조 × 조당 {{ genGroupMin }}명)이
+              교대당 필요 {{ genRequired }}명에 못 미칩니다.
             </template>
             <template v-if="genOvertimeExpected">
               <br /><b>⚠ 초과근무 발생:</b> 24시간·매일 커버를 위해 일부 인력이 주 최대시간을
