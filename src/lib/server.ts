@@ -450,6 +450,14 @@ export const server = {
       body: JSON.stringify({ team_id: teamId }),
     });
   },
+  /** 근무 성향 저장 — 자동 생성이 절대 규칙으로 존중 */
+  updateWorkPrefs(staffId: string, prefs: { preferred_shift: string | null; work_days: number[] | null }) {
+    return fetchJson<{ ok: boolean }>(`/api/v1/staff/${staffId}/work-prefs`, {
+      method: "PATCH",
+      body: JSON.stringify(prefs),
+    });
+  },
+
   assignResidentTeam(residentId: string, teamId: string | null) {
     return fetchJson(`/api/v1/residents/${residentId}/team`, {
       method: "PATCH",
@@ -779,6 +787,10 @@ export interface OrgPerson {
   contract_end_on: string | null;
   monthly_salary_krw: number | null;
   hourly_rate_est_krw: number | null;
+  /** 선호 교대 (북미식 고정 쉬프트): 'day' | 'evening' | 'night' | null(무관) */
+  preferred_shift: string | null;
+  /** 가능 요일 0=일 … 6=토; null = 모든 요일 가능 (예: 일요일만 아르바이트 = [0]) */
+  work_days: number[] | null;
   updated_at: string;
   is_inactive: boolean;
 }

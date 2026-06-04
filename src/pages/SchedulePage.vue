@@ -955,17 +955,18 @@ async function generateDayTeam(team: Team) {
     for (const d of days) {
       const ds = localDateStr(d);
       let filled = 0, tries = 0;
+      const dayOk = (w: OrgPerson) => !w.work_days?.length || w.work_days.includes(d.getDay());
       while (filled < required && tries < W.length) {
         const w = W[ptr % W.length]; ptr++; tries++;
         const key = `${w.id}-${ds}`;
-        if (onLeave.has(key) || existing.has(key) || hoursOf(w.id, ds) + hrs > maxH) continue;
+        if (!dayOk(w) || onLeave.has(key) || existing.has(key) || hoursOf(w.id, ds) + hrs > maxH) continue;
         put(w, ds, "");
         filled++;
       }
       // 커버리지 우선: 시간 한도는 넘을 수 있지만(초과), 휴가·하루 1근무는 절대 규칙
       if (filled < required) {
         const forced = W
-          .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
+          .filter((w) => dayOk(w) && !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
           .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
         for (const w of forced) {
           if (filled >= required) break;
@@ -1005,16 +1006,37 @@ async function runPatternGeneration() {
     const maxH = Math.max(8, genForm.value.maxWeekHours || 52);
     const workDays = pat.workDays; // 풀타임 주 근무일수 (12h: 3일, 8h: 5일)
     const shifts = genShifts.value.map((s) => ({ ...s, hours: hoursBetween(s.start, s.end) }));
-    // 고정 조 나누기 — 직원마다 교대가 고정된다 (라운드로빈)
+    // 고정 조 나누기 — 직원의 선호 교대(preferred_shift)를 먼저 존중하고,
+    // 무관인 인력은 작은 조부터 채워 균형을 맞춘다.
+    //   2교대: day→주간, evening/night→야간 · 3교대: day→0, evening→1, night→2
+    const prefIndex = (w: OrgPerson): number | null => {
+      const pref = w.preferred_shift;
+      if (!pref) return null;
+      if (shifts.length === 2) return pref === "day" ? 0 : 1;
+      return pref === "day" ? 0 : pref === "evening" ? 1 : 2;
+    };
     const groups: OrgPerson[][] = Array.from({ length: shifts.length }, () => []);
-    genWorkers.value.forEach((w, i) => groups[i % shifts.length].push(w));
+    const flexible: OrgPerson[] = [];
+    for (const w of genWorkers.value) {
+      const gi = prefIndex(w);
+      if (gi === null) flexible.push(w);
+      else groups[gi].push(w);
+    }
+    for (const w of flexible) {
+      let smallest = 0;
+      groups.forEach((g, i) => { if (g.length < groups[smallest].length) smallest = i; });
+      groups[smallest].push(w);
+    }
     const { days, dates } = spanDates();
     const onLeave = await collectApprovedLeave(dates);
     const { existing, addHours, hoursOf, daysOf } = await buildSpanState(dates);
 
+    // 가능 요일(work_days) — 직원 성향은 절대 규칙: 초과 강제 배치에서도 어기지 않는다
+    const dayOk = (w: OrgPerson, ds: string) =>
+      !w.work_days?.length || w.work_days.includes(new Date(ds + "T00:00:00").getDay());
     // 휴무는 주 근무일수 한도가 보장 (12h: 주 4일 휴무, 8h: 주 2일 휴무)
     const canWork = (w: OrgPerson, ds: string, h: number) =>
-      !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) &&
+      dayOk(w, ds) && !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) &&
       hoursOf(w.id, ds) + h <= maxH && daysOf(w.id, ds) < workDays;
     const fresh: ScheduleEntry[] = [];
     const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, tag: string, _slot: number) => {
@@ -1051,10 +1073,10 @@ async function runPatternGeneration() {
           }
         }
         // 3차 강제 배치: 24시간·매일 커버를 위해 주 근무일·시간 한도는 넘을 수 있다('초과' 표기).
-        //   단, 휴가·하루 1근무는 절대 규칙 — 못 채우면 진짜 공백(충원 필요).
+        //   단, 휴가·하루 1근무·가능 요일(직원 성향)은 절대 규칙 — 못 채우면 진짜 공백(충원 필요).
         if (filled < required) {
           const forced = genWorkers.value
-            .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
+            .filter((w) => dayOk(w, ds) && !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
             .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
           for (const w of forced) {
             if (filled >= required) break;
@@ -1598,7 +1620,8 @@ const showAlerts = ref(true);
             label="주 최대 근무시간" suffix="h" hint="기본 52h" />
           <div class="text-caption text-grey-7">
             <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.<br />
-            <q-icon name="o_groups_2" size="14px" /> 요양팀은 교대당 최소 2명(팀메이트)이 함께 배치됩니다.
+            <q-icon name="o_groups_2" size="14px" /> 요양팀은 교대당 최소 2명(팀메이트)이 함께 배치됩니다.<br />
+            <q-icon name="o_tune" size="14px" /> 직원별 <b>근무 성향</b>(선호 교대·가능 요일)을 절대 규칙으로 존중합니다 — 직원 페이지에서 설정.
           </div>
           <q-banner dense rounded
             :class="genShort ? 'bg-red-1 text-red-9' : genOvertimeExpected ? 'bg-orange-1 text-orange-10' : 'bg-green-1 text-green-9'">
