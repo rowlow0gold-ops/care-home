@@ -327,21 +327,24 @@ function openDay(d: Date) {
   dayLabel.value = `${d.getMonth() + 1}월 ${d.getDate()}일 (${DAY_KO[d.getDay()]})`;
   dayDialog.value = true;
 }
-// 시간대별 인원 — 같은 인원이 유지되는 구간으로 묶는다 (07시 시작 기준)
-interface HourSeg { range: string; count: number }
-function daySegments(ds: string): HourSeg[] {
+// 24시간 인원 그래프 — 시설 하루는 07시에 시작 (07 → 익일 06시)
+interface HourBar { hour: number; label: string; count: number; x: number; y: number; h: number; ok: boolean }
+const CHART = { w: 492, h: 150, top: 12, bottom: 22, barW: 16, gap: 4.5 };
+function dayChart(ds: string): { bars: HourBar[]; max: number; reqY: number } {
   const cov = hourCover(ds);
-  const segs: HourSeg[] = [];
-  const fmt = (h: number) => String(h % 24).padStart(2, "0");
-  let start = 7; // 시설 하루는 07시에 시작
-  for (let i = 1; i <= 24; i++) {
-    const h = (7 + i) % 24;
-    if (i === 24 || cov[h] !== cov[start % 24]) {
-      segs.push({ range: `${fmt(start)}–${fmt((7 + i) % 24)}시`, count: cov[start % 24] });
-      start = 7 + i;
-    }
-  }
-  return segs;
+  const hours = Array.from({ length: 24 }, (_, i) => (7 + i) % 24);
+  const max = Math.max(required.value, ...hours.map((h) => cov[h]), 1);
+  const plotH = CHART.h - CHART.top - CHART.bottom;
+  const bars = hours.map((h, i) => {
+    const c = cov[h];
+    const bh = Math.round((c / max) * plotH);
+    return {
+      hour: h, label: `${String(h).padStart(2, "0")}시`, count: c,
+      x: i * (CHART.barW + CHART.gap), y: CHART.top + plotH - bh, h: bh,
+      ok: c >= required.value,
+    };
+  });
+  return { bars, max, reqY: CHART.top + plotH - (required.value / max) * plotH };
 }
 function dayBlocks(ds: string): Array<{ block: Block; list: RosterEntry[] }> {
   const dm = byDate.value.get(ds);
@@ -466,16 +469,20 @@ onMounted(loadAll);
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
         <q-card-section class="q-gutter-md">
-          <!-- 시간대별 인원 — 1:10 기준 충족 여부 색상 -->
+          <!-- 24시간 인원 그래프 — 빨간 점선 = 필요 인원(1:10) -->
           <div>
-            <div class="text-caption text-grey-7 q-mb-xs">시간대별 근무 인원 (필요 {{ required }}명/시간)</div>
-            <div class="row q-gutter-xs">
-              <q-badge v-for="seg in daySegments(dayDs)" :key="seg.range"
-                :color="seg.count >= required ? 'green-2' : 'red-2'"
-                :text-color="seg.count >= required ? 'green-10' : 'red-10'">
-                {{ seg.range }} <b class="q-ml-xs">{{ seg.count }}명</b>
-              </q-badge>
-            </div>
+            <div class="text-caption text-grey-7 q-mb-xs">24시간 근무 인원 (필요 {{ required }}명/시간 — 빨간 선)</div>
+            <svg :width="CHART.w" :height="CHART.h" class="hour-chart">
+              <template v-for="b in dayChart(dayDs).bars" :key="b.hour">
+                <rect :x="b.x" :y="b.y" :width="CHART.barW" :height="b.h" rx="2"
+                  :class="b.ok ? 'bar-ok' : 'bar-bad'">
+                  <title>{{ b.label }} — {{ b.count }}명</title>
+                </rect>
+                <text v-if="b.count" :x="b.x + CHART.barW / 2" :y="b.y - 3" class="bar-val">{{ b.count }}</text>
+                <text v-if="b.hour % 3 === 1 || b.hour === 7" :x="b.x + CHART.barW / 2" :y="CHART.h - 8" class="bar-lbl">{{ b.hour }}</text>
+              </template>
+              <line x1="0" :x2="CHART.w" :y1="dayChart(dayDs).reqY" :y2="dayChart(dayDs).reqY" class="req-line" />
+            </svg>
           </div>
           <q-separator />
           <div v-for="{ block, list } in dayBlocks(dayDs)" :key="block.key">
@@ -504,4 +511,10 @@ onMounted(loadAll);
 .day-cell { min-height: 104px; border: 1px solid #f1f5f9; padding: 6px; }
 .day-cell:hover { background: #f0f9ff; }
 .today-cell { outline: 2px solid var(--q-primary); outline-offset: -2px; }
+.hour-chart { display: block; }
+.bar-ok { fill: #34d399; }
+.bar-bad { fill: #f87171; }
+.bar-val { font-size: 9px; fill: #475569; text-anchor: middle; }
+.bar-lbl { font-size: 9px; fill: #94a3b8; text-anchor: middle; }
+.req-line { stroke: #ef4444; stroke-width: 1.5; stroke-dasharray: 4 3; }
 </style>
