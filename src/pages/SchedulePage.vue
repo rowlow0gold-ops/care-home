@@ -743,19 +743,20 @@ const showGenDialog = ref(false);
 
 interface PatShift { name: string; start: string; end: string }
 interface GenPattern { value: string; label: string; groups: number; cycle: number[]; defaultMaxH: number; shifts: PatShift[] }
-// 현장에서 실제로 쓰는 두 가지 교대 패턴 (개인별 사이클; -1 = 휴무):
-//   주주야야비비: 주간(09-18) 2일 → 야간(18-익일09) 2일 → 휴무 2일, 6일 주기 / 6개 조
-//   퐁당당:      24시간(09-익일09) 근무 → 휴무 2일, 3일 주기 / 3개 조
+// 합법 운영 시설을 위한 패턴 (개인별 사이클; -1 = 휴무, 조 간격 = 주기/조수):
+//   4조 2교대:   북미(미국·캐나다)식 12시간 2교대를 한국 52시간제에 맞춘 형태.
+//                주간(07-19) 2일 → 야간(19-익일07) 2일 → 휴무 4일, 8일 주기 / 4개 조 (주 평균 42h)
+//   주주야야비비: 국내 현장 표준. 주간(09-18) 2일 → 야간(18-익일09) 2일 → 휴무 2일, 6일 주기 / 6개 조
 const PATTERNS: GenPattern[] = [
-  { value: "jjyybb", label: "주주야야비비 — 주간2·야간2·휴무2 (6일 주기)", groups: 6,
-    cycle: [0, 0, 1, 1, -1, -1], defaultMaxH: 60,
+  { value: "ddnn", label: "4조 2교대 — 주간2·야간2·휴무4 (북미식 12시간, 8일 주기)", groups: 4,
+    cycle: [0, 0, 1, 1, -1, -1, -1, -1], defaultMaxH: 52,
+    shifts: [{ name: "주간", start: "07:00", end: "19:00" }, { name: "야간", start: "19:00", end: "07:00" }] },
+  { value: "jjyybb", label: "주주야야비비 — 주간2·야간2·휴무2 (국내 현장형, 6일 주기)", groups: 6,
+    cycle: [0, 0, 1, 1, -1, -1], defaultMaxH: 63,
     shifts: [{ name: "주간", start: "09:00", end: "18:00" }, { name: "야간", start: "18:00", end: "09:00" }] },
-  { value: "pdd", label: "퐁당당 — 24시간 근무 후 2일 휴무 (3일 주기)", groups: 3,
-    cycle: [0, -1, -1], defaultMaxH: 72,
-    shifts: [{ name: "당직", start: "09:00", end: "09:00" }] },
 ];
 const genForm = ref({
-  pattern: "jjyybb", maxWeekHours: 60, shiftStarts: ["09:00", "18:00"],
+  pattern: "ddnn", maxWeekHours: 52, shiftStarts: ["07:00", "19:00"],
   target: "next" as "this" | "next", // 생성 대상: 이번 달 / 다음 달 (기본 다음 달)
   restDays: 1 as 1 | 2, // 주당 휴무일(인력별) — 절대 규칙. 시설은 매일(공휴일 포함) 운영
   resetExisting: true, // 생성 기간 내 기존 근무 초기화 후 생성
@@ -788,10 +789,11 @@ const genPattern = computed(() => PATTERNS.find((p) => p.value === genForm.value
 const genGroupMin = computed(() => Math.floor(genWorkers.value.length / genPattern.value.groups));
 const genGroupMax = computed(() => Math.ceil(genWorkers.value.length / genPattern.value.groups));
 // 조당 최소 인원이 교대당 필요 인원(1:10)보다 적으면 인력 부족.
-// 한 교대에 동시에 투입되는 조 수 — 주주야야비비 2개 조, 퐁당당 1개 조
+// 한 교대에 동시에 투입되는 조 수 — 4조 2교대 1개 조, 주주야야비비 2개 조
 const genDutyGroups = computed(() => {
-  const cyc = genPattern.value.cycle;
-  return Math.min(...genPattern.value.shifts.map((_, si) => cyc.filter((c) => c === si).length));
+  const pat = genPattern.value;
+  const scale = pat.groups / pat.cycle.length;
+  return Math.min(...pat.shifts.map((_, si) => pat.cycle.filter((c) => c === si).length * scale));
 });
 const genShort = computed(() => genGroupMin.value * genDutyGroups.value < genRequired.value);
 // 주당 필요 시간(24h×7×필요인원) vs 가용 시간(인력×주 최대시간) — 부족하면 초과근무 발생.
@@ -1009,9 +1011,10 @@ async function runPatternGeneration() {
         notes: `${team.name} ${sh.name}${tag}` });
     };
 
-    // 조 g 의 d일차 근무: cycle[(dayIdx + g) % len] (0=주간, 1=야간/당직, -1=휴무).
-    // 주주야야비비(6조)는 매일 주간 2조·야간 2조·휴무 2조, 퐁당당(3조)은 당직 1조·휴무 2조.
+    // 조 g 의 d일차 근무: cycle[(dayIdx + g·간격) % 주기] (0=주간, 1=야간, -1=휴무). 간격 = 주기/조수.
+    // 4조 2교대는 매일 주간 1조·야간 1조·휴무 2조, 주주야야비비는 주간 2조·야간 2조·휴무 2조.
     const cyc = pat.cycle, cl = cyc.length;
+    const gap = cl / pat.groups; // 조 간 사이클 시차 (ddnn: 2일, jjyybb: 1일)
     const epoch = new Date(2026, 0, 4); // 일요일 기준점 — 달력에 고정된 회전
     const dayIndexOf = (d: Date) =>
       Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - epoch.getTime()) / 86400000);
@@ -1024,7 +1027,7 @@ async function runPatternGeneration() {
         // 오늘 이 교대(si)에 배정된 조들 — 각 조의 사이클 위치로 판정
         const onDuty: number[] = [];
         for (let g = 0; g < pat.groups; g++) {
-          if (cyc[(((dayIdx + g) % cl) + cl) % cl] === si) onDuty.push(g);
+          if (cyc[(((dayIdx + g * gap) % cl) + cl) % cl] === si) onDuty.push(g);
         }
         let filled = 0;
         for (const gi of onDuty) {
@@ -1191,7 +1194,7 @@ const showAlerts = ref(true);
       <!-- Draft controls -->
       <div v-if="canCreate" class="col-auto q-gutter-xs">
         <q-btn outline color="primary" icon="o_auto_awesome" label="자동 생성" dense :loading="generating" @click="openGenerate">
-          <q-tooltip>대상 달(이번 달/다음 달)의 근무를 24시간 교대 패턴으로 생성합니다. 주주야야비비·퐁당당 패턴, 1:10 인원 자동 배치.</q-tooltip>
+          <q-tooltip>대상 달(이번 달/다음 달)의 근무를 24시간 교대 패턴으로 생성합니다. 4조 2교대(북미식)·주주야야비비 패턴, 1:10 인원 자동 배치.</q-tooltip>
         </q-btn>
         <q-btn color="primary" icon="o_save" label="저장" unelevated dense :disable="!dirty" :loading="saving" @click="saveDraft" />
         <q-btn outline color="grey-8" icon="o_undo" label="되돌리기" dense :disable="!dirty" @click="rollbackDraft" />
