@@ -395,7 +395,7 @@ const genPresets = computed<Preset[]>(() =>
   genConfigured.value
     ? genShifts.value.map((s) => ({
         label: `${s.name} (${s.start}–${s.end})`,
-        start: s.start, end: s.end, hours: netHours(s.start, s.end),
+        start: s.start, end: s.end, hours: hoursBetween(s.start, s.end),
       }))
     : [],
 );
@@ -517,21 +517,7 @@ function hoursBetween(start: string, end: string): number {
   if (mins <= 0) mins += 24 * 60; // wraps past midnight
   return Math.round((mins / 60) * 10) / 10;
 }
-// 휴게(식사)시간 — 근로기준법 기준 4시간당 30분을 근무시간에서 자동 차감한다.
-//   예: 8시간 블록 → 휴게 1h → 근무 7h 인정 / 12시간 블록 → 휴게 1.5h → 10.5h.
-function breakHoursOf(block: number): number {
-  return Math.floor(block / 4) * 0.5;
-}
-function netHours(start: string, end: string): number {
-  const block = hoursBetween(start, end);
-  return Math.max(0.5, Math.round((block - breakHoursOf(block)) * 10) / 10);
-}
-// "HH:MM" + 분 (24시간 래핑)
-function addToHM(hm: string, mins: number): string {
-  const [h, m] = hm.split(":").map(Number);
-  const t = (((h * 60 + m + mins) % 1440) + 1440) % 1440;
-  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
-}
+
 async function addNewType() {
   const t = newType.value;
   if (!t.label.trim() || !/^\d{2}:\d{2}$/.test(t.start) || !/^\d{2}:\d{2}$/.test(t.end)) {
@@ -544,7 +530,7 @@ async function addNewType() {
   }
   // 시간은 시작/종료로 자동 계산.
   customPresets.value = [...customPresets.value, {
-    label: t.label.trim(), start: t.start, end: t.end, hours: netHours(t.start, t.end),
+    label: t.label.trim(), start: t.start, end: t.end, hours: hoursBetween(t.start, t.end),
   }];
   await savePresets();
   showNewType.value = false;
@@ -768,10 +754,8 @@ const SHIFTS_8 = [
   { name: "야간", start: "23:00", end: "07:00" },
 ];
 const PATTERNS: GenPattern[] = [
-  { value: "2x12", label: "2조 맞교대 · 12시간 (주간/야간)", groups: 2, shifts: SHIFTS_12 },
-  { value: "3x8",  label: "3조 3교대 · 8시간 (주간/오후/야간)", groups: 3, shifts: SHIFTS_8 },
-  { value: "4x2",  label: "4조 2교대 · 12시간 (2개 조 휴무)", groups: 4, shifts: SHIFTS_12 },
-  { value: "4x3",  label: "4조 3교대 · 8시간 (1개 조 휴무)", groups: 4, shifts: SHIFTS_8 },
+  { value: "2x12", label: "12/12 · 2교대 (주간/야간 12시간)", groups: 2, shifts: SHIFTS_12 },
+  { value: "3x8",  label: "8/8/8 · 3교대 (주간/오후/야간 8시간)", groups: 3, shifts: SHIFTS_8 },
 ];
 const SHIFT_NAMES_2 = ["주간", "야간"];
 const SHIFT_NAMES_3 = ["주간", "오후", "야간"];
@@ -786,14 +770,11 @@ watch(() => genForm.value.pattern, () => {
   const pat = PATTERNS.find((p) => p.value === genForm.value.pattern) ?? PATTERNS[0];
   genForm.value.shiftStarts = pat.shifts.map((s) => s.start);
 });
-// 커스텀 시작 시각 → 교대 파생. 체류시간 = 식사 포함:
-//   3교대(8/8/8): 9시간 체류(실근무 8h+식사 1h) → 교대 간 1시간 겹침(인수인계·식사 커버)
-//   2교대(12h):  12시간 체류(실근무 10.5h, 휴게 1.5h 포함)
+// 커스텀 시작 시각 → 교대 파생. 종료 = 다음 교대의 시작 (8/8/8 또는 12/12, 휴게 미반영)
 const genShifts = computed<PatShift[]>(() => {
   const starts = genForm.value.shiftStarts;
   const names = starts.length === 2 ? SHIFT_NAMES_2 : SHIFT_NAMES_3;
-  const stayMin = (starts.length === 2 ? 12 : 9) * 60;
-  return starts.map((s, i) => ({ name: names[i] ?? `교대${i + 1}`, start: s, end: addToHM(s, stayMin) }));
+  return starts.map((s, i) => ({ name: names[i] ?? `교대${i + 1}`, start: s, end: starts[(i + 1) % starts.length] }));
 });
 const genWorkers = ref<OrgPerson[]>([]);
 const genTeam = computed(() => teams.value.find((t) => t.id === selectedTeam.value) ?? null);
@@ -944,7 +925,7 @@ async function generateDayTeam(team: Team) {
     const onLeave = await collectApprovedLeave(dates);
     const { existing, addHours, hoursOf, daysOf } = await buildSpanState(dates);
     const maxDays = 7 - genForm.value.restDays; // 주당 휴무일 보장
-    const hrs = netHours(team.shift_start_hm, team.shift_end_hm); // 휴게 차감
+    const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
     const fresh: ScheduleEntry[] = [];
     const put = (w: OrgPerson, ds: string, tag: string) => {
       existing.add(`${w.id}-${ds}`);
@@ -1001,7 +982,7 @@ async function runPatternGeneration() {
   try {
     const required = genRequired.value;
     const maxH = Math.max(8, genForm.value.maxWeekHours || 52);
-    const shifts = genShifts.value.map((s) => ({ ...s, hours: netHours(s.start, s.end) })); // 휴게 차감
+    const shifts = genShifts.value.map((s) => ({ ...s, hours: hoursBetween(s.start, s.end) }));
     // 조 나누기 (라운드로빈)
     const groups: OrgPerson[][] = Array.from({ length: pat.groups }, () => []);
     genWorkers.value.forEach((w, i) => groups[i % pat.groups].push(w));
@@ -1015,16 +996,12 @@ async function runPatternGeneration() {
       !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) &&
       hoursOf(w.id, ds) + h <= maxH && daysOf(w.id, ds) < maxDays;
     const fresh: ScheduleEntry[] = [];
-    // 2인 1조 페어: 같은 교대의 짝수 번째 인원은 +30분 늦게 출근 — 식사·인수인계를 서로 커버
-    const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, tag: string, slot: number) => {
-      const off = slot % 2 === 1 ? 30 : 0;
-      const st = off ? addToHM(sh.start, off) : sh.start;
-      const en = off ? addToHM(sh.end, off) : sh.end;
+    const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, tag: string, _slot: number) => {
       existing.add(`${w.id}-${ds}`);
       addHours(w.id, ds, sh.hours);
       fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
-        shift_start: st, shift_end: en, shift_hours: sh.hours,
-        notes: `${team.name} ${sh.name}${tag}${off ? " ·페어B" : ""}` });
+        shift_start: sh.start, shift_end: sh.end, shift_hours: sh.hours,
+        notes: `${team.name} ${sh.name}${tag}` });
     };
 
     const ptrs = groups.map(() => 0);
@@ -1591,14 +1568,9 @@ const showAlerts = ref(true);
           <q-input v-else v-model.number="genForm.maxWeekHours" type="number" outlined dense
             label="주 최대 근무시간" suffix="h" hint="기본 52h" />
           <q-checkbox v-model="genForm.resetExisting" dense label="기존 근무 초기화 후 생성 (대상 4주 전체, 저장 전까지 되돌리기 가능)" />
-          <q-banner v-if="genTeam?.team_type === 'residential'" dense rounded class="bg-blue-1 text-blue-10">
-            <template #avatar><q-icon name="o_groups_2" /></template>
-            <b>체류·페어 규칙</b><br />
-            · {{ genForm.shiftStarts.length === 2 ? "12시간 체류 (휴게 1.5h 포함, 실근무 10.5h)" : "교대당 9시간 체류 (식사 1h 포함, 실근무 8h) — 교대 간 1시간 겹침으로 인수인계" }}<br />
-            · 2인 1조 페어: 짝은 30분 차이로 출근해 식사·응급 시 서로 커버합니다 (교대당 최소 2명).
-          </q-banner>
           <div class="text-caption text-grey-7">
-            <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
+            <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.<br />
+            <q-icon name="o_groups_2" size="14px" /> 요양팀은 교대당 최소 2명(팀메이트)이 함께 배치됩니다.
           </div>
           <q-banner dense rounded
             :class="genShort ? 'bg-red-1 text-red-9' : genOvertimeExpected ? 'bg-orange-1 text-orange-10' : 'bg-green-1 text-green-9'">
