@@ -387,13 +387,16 @@ async function loadPresets() {
     const s = await presetsStore();
     customPresets.value = (await s.get<Preset[]>("custom_presets")) ?? [];
     // 저장된 자동 생성 설정 복원 → 근무 유형 팔레트에 반영
-    const gf = await s.get<{ pattern: string; cycleWeeks: 1 | 2; maxWeekHours: number; shiftStarts: string[] }>("gen_form");
+    const gf = await s.get<{ pattern: string; cycleWeeks: 1 | 2; maxWeekHours: number; shiftStarts: string[]; holidays?: "all" | "skip_holiday" | "skip_weekend_holiday"; resetExisting?: boolean }>("gen_form");
     if (gf?.pattern && Array.isArray(gf.shiftStarts)) {
       genForm.value.pattern = gf.pattern;
       await nextTick(); // 패턴 watcher 가 shiftStarts 를 리셋한 뒤에 복원
       genForm.value.cycleWeeks = gf.cycleWeeks ?? 1;
       genForm.value.maxWeekHours = gf.maxWeekHours ?? 52;
       genForm.value.shiftStarts = gf.shiftStarts;
+      genForm.value.holidays = gf.holidays ?? "all";
+      genForm.value.resetExisting = gf.resetExisting ?? true;
+      genForm.value.target = (gf as any).target ?? "next";
       genConfigured.value = true;
     }
   } catch { customPresets.value = []; }
@@ -702,7 +705,12 @@ const PATTERNS: GenPattern[] = [
 ];
 const SHIFT_NAMES_2 = ["주간", "야간"];
 const SHIFT_NAMES_3 = ["주간", "오후", "야간"];
-const genForm = ref({ pattern: "2x12", cycleWeeks: 1 as 1 | 2, maxWeekHours: 52, shiftStarts: ["07:00", "19:00"] });
+const genForm = ref({
+  pattern: "2x12", cycleWeeks: 1 as 1 | 2, maxWeekHours: 52, shiftStarts: ["07:00", "19:00"],
+  target: "next" as "this" | "next", // 생성 대상: 이번 달 / 다음 달 (기본 다음 달)
+  holidays: "all" as "all" | "skip_holiday" | "skip_weekend_holiday", // 휴일 운영 옵션
+  resetExisting: true, // 생성 기간 내 기존 근무 초기화 후 생성
+});
 // 패턴을 바꾸면 시작 시각을 그 패턴 기본값으로 리셋
 watch(() => genForm.value.pattern, () => {
   const pat = PATTERNS.find((p) => p.value === genForm.value.pattern) ?? PATTERNS[0];
@@ -755,7 +763,6 @@ async function collectApprovedLeave(dates: string[]): Promise<Set<string>> {
 // 자동 생성 버튼 → 팀 인력 로드 후 패턴 다이얼로그(요양) 또는 즉시 생성(주간팀)
 async function openGenerate() {
   if (!canCreate.value) return;
-  if (viewMode.value !== "week") { $q.notify({ type: "info", message: "주간 보기에서 자동 생성됩니다." }); return; }
   const team = genTeam.value;
   if (!team) { $q.notify({ type: "warning", message: "팀을 선택하세요." }); return; }
   if (team.team_type === "visit") { $q.notify({ type: "info", message: "방문팀은 케이스별로 수동 편성합니다." }); return; }
@@ -772,8 +779,45 @@ async function openGenerate() {
     $q.notify({ type: "warning", message: "이 팀에 배정된 인력이 없습니다. ‘팀’ 탭에서 먼저 배정하세요." });
     return;
   }
-  if (team.team_type === "day") { await generateDayTeam(team); return; }
-  showGenDialog.value = true; // 요양: 24시간 패턴 선택
+  // 이번 달·다음 달에 걸친 공휴일 미리 로드 (휴일 옵션용 — 연말 경계 포함)
+  const now = new Date();
+  await loadHolidays(now.getFullYear());
+  await loadHolidays(new Date(now.getFullYear(), now.getMonth() + 2, 1).getFullYear());
+  showGenDialog.value = true; // 요양=패턴 선택 / 주간=휴일·시간 옵션
+}
+
+// 다이얼로그 '생성' → 팀 유형에 따라 분기
+async function runGeneration() {
+  const team = genTeam.value;
+  if (!team) return;
+  if (team.team_type === "day") {
+    showGenDialog.value = false;
+    saveGenSettings();
+    await generateDayTeam(team);
+  } else {
+    await runPatternGeneration();
+  }
+}
+
+// 생성 기간 내 기존 근무 초기화 — 드래프트로 처리(저장 전 미반영, 되돌리기 가능).
+async function resetSpan(dates: string[]) {
+  try {
+    const rows = await server.roster(dates[0], dates[dates.length - 1], selectedTeam.value || undefined);
+    for (const r of rows) {
+      pendingDeletes.value.add(r.id);
+      pendingUpdates.value.delete(r.id);
+    }
+    pendingDeletes.value = new Set(pendingDeletes.value);
+    pendingUpdates.value = new Map(pendingUpdates.value);
+  } catch { /* 조회 실패 시 초기화 생략 */ }
+  pendingCreates.value = pendingCreates.value.filter((c) => c.shift_date < dates[0] || c.shift_date > dates[dates.length - 1]);
+}
+
+// 휴일 옵션에 따라 편성을 건너뛸 날인지
+function skipDay(d: Date, ds: string): boolean {
+  if (genForm.value.holidays === "all") return false;
+  if (holidayMap.value.has(ds)) return true;
+  return genForm.value.holidays === "skip_weekend_holiday" && (d.getDay() === 0 || d.getDay() === 6);
 }
 
 // 생성 스팬 전체의 기존 근무 + 주별 누적 시간 상태 (중복 방지·주 최대시간 한도용)
@@ -803,20 +847,26 @@ async function buildSpanState(dates: string[]) {
   return { existing, addHours, hoursOf };
 }
 
+// 생성 대상 달(이번 달/다음 달)의 1일~말일
 function spanDates(): { days: Date[]; dates: string[] } {
+  const now = new Date();
+  const offset = genForm.value.target === "this" ? 0 : 1;
+  const first = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
   const days: Date[] = [];
-  for (let i = 0; i < 28; i++) days.push(addDays(weekDates.value[0], i)); // 1개월(4주)
+  for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) days.push(new Date(d));
   return { days, dates: days.map(localDateStr) };
 }
 
-// 주간팀: 팀 근무창 1교대, 1:10 인원, 주 최대시간 한도 + 휴가 제외, 1개월 생성
+// 주간팀: 팀 근무창 1교대, 1:10 인원, 주 최대시간 한도 + 휴가 제외, 대상 달 생성
 async function generateDayTeam(team: Team) {
   generating.value = true;
   try {
     const required = genRequired.value;
     const maxH = Math.max(8, genForm.value.maxWeekHours || 52);
     const W = genWorkers.value;
-    const { dates } = spanDates();
+    const { days, dates } = spanDates();
+    if (genForm.value.resetExisting) await resetSpan(dates);
     const onLeave = await collectApprovedLeave(dates);
     const { existing, addHours, hoursOf } = await buildSpanState(dates);
     const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
@@ -828,7 +878,9 @@ async function generateDayTeam(team: Team) {
         shift_start: team.shift_start_hm, shift_end: team.shift_end_hm, shift_hours: hrs, notes: `${team.name} 자동${tag}` });
     };
     let ptr = 0, shortfall = 0, overtime = 0;
-    for (const ds of dates) {
+    for (const d of days) {
+      const ds = localDateStr(d);
+      if (skipDay(d, ds)) continue; // 휴일 옵션에 따라 제외
       let filled = 0, tries = 0;
       while (filled < required && tries < W.length) {
         const w = W[ptr % W.length]; ptr++; tries++;
@@ -851,7 +903,7 @@ async function generateDayTeam(team: Team) {
       }
       if (filled < required) shortfall++;
     }
-    finishGeneration(fresh, shortfall, overtime, "주간 1교대 · 1개월");
+    finishGeneration(fresh, shortfall, overtime, "주간 1교대", dates[0]);
   } finally { generating.value = false; }
 }
 
@@ -880,6 +932,7 @@ async function runPatternGeneration() {
     const groups: OrgPerson[][] = Array.from({ length: pat.groups }, () => []);
     genWorkers.value.forEach((w, i) => groups[i % pat.groups].push(w));
     const { days, dates } = spanDates();
+    if (genForm.value.resetExisting) await resetSpan(dates);
     const onLeave = await collectApprovedLeave(dates);
     const { existing, addHours, hoursOf } = await buildSpanState(dates);
 
@@ -898,6 +951,7 @@ async function runPatternGeneration() {
     let shortfall = 0, overtime = 0;
     for (const d of days) {
       const ds = localDateStr(d);
+      if (skipDay(d, ds)) continue; // 휴일 옵션에 따라 제외
       const period = Math.floor(weekIndexOf(d) / genForm.value.cycleWeeks); // 1~2주마다 주야 회전
       shifts.forEach((sh, si) => {
         const gi = (si + period) % pat.groups;       // 교대 si ← 조 gi (휴무 조는 자동으로 빠짐)
@@ -936,17 +990,21 @@ async function runPatternGeneration() {
         if (filled < required) shortfall++; // 그날 전원이 휴가/근무중일 때만 남는 진짜 공백
       });
     }
-    finishGeneration(fresh, shortfall, overtime, `${pat.label} · 1개월`);
+    finishGeneration(fresh, shortfall, overtime, pat.label, dates[0]);
   } finally { generating.value = false; }
 }
 
-async function finishGeneration(fresh: ScheduleEntry[], shortfall: number, overtime: number, patternLabel: string) {
+async function finishGeneration(fresh: ScheduleEntry[], shortfall: number, overtime: number, patternLabel: string, firstDs: string) {
   if (!fresh.length) {
     $q.notify({ type: "info", message: "생성할 빈 칸이 없습니다. (이미 채워져 있습니다)" });
     return;
   }
   pendingCreates.value = [...pendingCreates.value, ...fresh];
   if (selectedTeam.value) await loadTeamStaff(selectedTeam.value);
+  // 생성한 달이 보이도록 뷰 이동
+  const d0 = new Date(firstDs + "T00:00:00");
+  if (viewMode.value === "week") currentMonday.value = weekMonday(d0);
+  else currentMonth.value = new Date(d0.getFullYear(), d0.getMonth(), 1);
   rebuild();
   if (shortfall > 0) {
     $q.notify({
@@ -1056,8 +1114,8 @@ const showAlerts = ref(true);
 
       <!-- Draft controls -->
       <div v-if="canCreate" class="col-auto q-gutter-xs">
-        <q-btn v-if="viewMode === 'week'" outline color="primary" icon="o_auto_awesome" label="자동 생성" dense :loading="generating" @click="openGenerate">
-          <q-tooltip>24시간 교대 패턴(2조 맞교대·3조 3교대·4조 2교대·4조 3교대)으로 근무를 생성합니다. 1~2주 단위 주야 변경, 1:10 인원 자동 배치.</q-tooltip>
+        <q-btn outline color="primary" icon="o_auto_awesome" label="자동 생성" dense :loading="generating" @click="openGenerate">
+          <q-tooltip>대상 달(이번 달/다음 달)의 근무를 24시간 교대 패턴으로 생성합니다. 주야 변경 주기·휴일 옵션·1:10 인원 자동 배치.</q-tooltip>
         </q-btn>
         <q-btn color="primary" icon="o_save" label="저장" unelevated dense :disable="!dirty" :loading="saving" @click="saveDraft" />
         <q-btn outline color="grey-8" icon="o_undo" label="되돌리기" dense :disable="!dirty" @click="rollbackDraft" />
@@ -1405,24 +1463,38 @@ const showAlerts = ref(true);
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
         <q-card-section class="q-gutter-md">
-          <q-select v-model="genForm.pattern" :options="PATTERNS" option-value="value" option-label="label"
-            emit-value map-options outlined dense label="교대 패턴" />
           <div class="row q-gutter-sm">
-            <q-select class="col" v-model="genForm.cycleWeeks" outlined dense emit-value map-options label="주야 변경 주기"
-              :options="[{ label: '1주마다 변경', value: 1 }, { label: '2주마다 변경', value: 2 }]" />
-            <q-input class="col" v-model.number="genForm.maxWeekHours" type="number" outlined dense
-              label="주 최대 근무시간" suffix="h" hint="기본 52h — 한도 내에서 휴무 자동 발생" />
+            <q-select class="col" v-model="genForm.target" outlined dense emit-value map-options label="생성 대상"
+              :options="[{ label: '다음 달', value: 'next' }, { label: '이번 달', value: 'this' }]" />
+            <q-select class="col" v-model="genForm.holidays" outlined dense emit-value map-options label="휴일 운영"
+              :options="[
+                { label: '매일 운영 (공휴일 포함)', value: 'all' },
+                { label: '공휴일 제외', value: 'skip_holiday' },
+                { label: '주말·공휴일 제외', value: 'skip_weekend_holiday' },
+              ]" />
           </div>
-          <div>
-            <div class="text-caption text-grey-7 q-mb-xs">교대 시작 시각 — 종료는 다음 교대 시작 (24시간 자동 커버)</div>
+          <template v-if="genTeam?.team_type === 'residential'">
+            <q-select v-model="genForm.pattern" :options="PATTERNS" option-value="value" option-label="label"
+              emit-value map-options outlined dense label="교대 패턴" />
             <div class="row q-gutter-sm">
-              <q-input v-for="(s, i) in genForm.shiftStarts" :key="i" class="col" v-model="genForm.shiftStarts[i]"
-                :label="genShifts[i]?.name" outlined dense mask="##:##" hint="HH:MM" />
+              <q-select class="col" v-model="genForm.cycleWeeks" outlined dense emit-value map-options label="주야 변경 주기"
+                :options="[{ label: '1주마다 변경', value: 1 }, { label: '2주마다 변경', value: 2 }]" />
+              <q-input class="col" v-model.number="genForm.maxWeekHours" type="number" outlined dense
+                label="주 최대 근무시간" suffix="h" hint="기본 52h — 한도 내에서 휴무 자동 발생" />
             </div>
-          </div>
+            <div>
+              <div class="text-caption text-grey-7 q-mb-xs">교대 시작 시각 — 종료는 다음 교대 시작 (24시간 자동 커버)</div>
+              <div class="row q-gutter-sm">
+                <q-input v-for="(s, i) in genForm.shiftStarts" :key="i" class="col" v-model="genForm.shiftStarts[i]"
+                  :label="genShifts[i]?.name" outlined dense mask="##:##" hint="HH:MM" />
+              </div>
+            </div>
+          </template>
+          <q-input v-else v-model.number="genForm.maxWeekHours" type="number" outlined dense
+            label="주 최대 근무시간" suffix="h" hint="기본 52h" />
+          <q-checkbox v-model="genForm.resetExisting" dense label="기존 근무 초기화 후 생성 (대상 달 전체, 저장 전까지 되돌리기 가능)" />
           <div class="text-caption text-grey-7">
-            <q-icon name="o_event" size="14px" /> 생성 기간: 이번 주 시작일부터 <b>1개월(4주)</b> ·
-            승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
+            <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
           </div>
           <q-banner dense rounded
             :class="genShort ? 'bg-red-1 text-red-9' : genOvertimeExpected ? 'bg-orange-1 text-orange-10' : 'bg-green-1 text-green-9'">
@@ -1442,7 +1514,7 @@ const showAlerts = ref(true);
         <q-card-actions align="right" class="q-px-md q-pb-md">
           <q-btn flat label="취소" v-close-popup />
           <q-btn :color="genShort ? 'negative' : 'primary'" :label="genShort ? '부족해도 생성' : '생성'" unelevated
-            :loading="generating" @click="runPatternGeneration" />
+            :loading="generating" @click="runGeneration" />
         </q-card-actions>
       </q-card>
     </q-dialog>
