@@ -225,15 +225,24 @@ function rollbackDraft() {
 }
 function clearDraft() {
   $q.dialog({
-    title: "클리어", message: "현재 보이는 기간의 근무를 모두 비웁니다. (저장 시 반영)",
+    title: "클리어", message: "현재 보이는 기간의 근무를 모두 비우고, 근무 유형도 초기화합니다. (근무는 저장 시 반영)",
     cancel: { label: "취소", flat: true }, ok: { label: "클리어", color: "negative", unelevated: true }, persistent: true,
-  }).onOk(() => {
+  }).onOk(async () => {
     for (const e of entries.value) {
       if (isNew(e.id)) pendingCreates.value = pendingCreates.value.filter((c) => c.id !== e.id);
       else pendingDeletes.value.add(e.id);
     }
     pendingDeletes.value = new Set(pendingDeletes.value);
     rebuild();
+    // 근무 유형 팔레트 초기화 (자동 생성 설정 + 커스텀 유형)
+    genConfigured.value = false;
+    customPresets.value = [];
+    try {
+      const s = await presetsStore();
+      await s.delete("gen_form");
+      await s.set("custom_presets", []);
+      await s.save();
+    } catch { /* best effort */ }
   });
 }
 
