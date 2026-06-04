@@ -306,16 +306,10 @@ async function publish() {
     }
   };
   if (published.value) {
-    $q.dialog({
-      title: "스케줄 재발행",
-      message: `이 기간에 이미 발행된 근무 ${entries.value.length}건이 있습니다. 새 스케줄로 교체할까요?`,
-      ok: { label: "교체 발행", color: "negative", unelevated: true },
-      cancel: { label: "취소", flat: true },
-      persistent: true,
-    }).onOk(doIt);
-  } else {
-    await doIt();
+    $q.notify({ type: "info", message: "이미 발행된 기간입니다. 발행된 근무표는 변경하지 않습니다." });
+    return;
   }
+  await doIt();
 }
 
 // ── 일자 상세 다이얼로그 ──────────────────────────────────────────────────────
@@ -374,10 +368,13 @@ onMounted(loadAll);
         <q-btn flat round dense icon="o_chevron_left" @click="prev" />
         <div class="text-subtitle1 text-weight-medium" style="min-width: 175px; text-align: center">{{ periodLabel }}</div>
         <q-btn flat round dense icon="o_chevron_right" @click="next" />
-        <q-btn v-if="canPublish" color="primary" unelevated icon="o_publish" :loading="publishing"
-          :label="published ? '재발행' : '2주 스케줄 발행'" @click="publish">
+        <q-btn v-if="canPublish && !published" color="primary" unelevated icon="o_publish" :loading="publishing"
+          label="2주 스케줄 발행" @click="publish">
           <q-tooltip>근무조 규칙으로 2주치 근무를 계산해 확정 저장합니다. 승인된 휴가는 제외.</q-tooltip>
         </q-btn>
+        <q-badge v-else-if="published" color="green-2" text-color="green-10" class="q-pa-sm">
+          <q-icon name="o_verified" size="14px" class="q-mr-xs" /> 발행 완료
+        </q-badge>
       </div>
     </div>
 
