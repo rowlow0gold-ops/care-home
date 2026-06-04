@@ -401,10 +401,10 @@ onMounted(() => { load(); });
             outlined dense emit-value map-options />
           <q-select v-if="prefsForm.group === 'h12'" v-model="prefsForm.shift" :options="SHIFT12_OPTIONS"
             label="교대 (12시간)" outlined dense emit-value map-options
-            hint="3일 연속 런 ×2 (2주) — 주말은 2주에 1일만, 근무 요일은 기간마다 회전" />
+            hint="3일 연속 런 ×2 (2주) — 격주 주말 포함, 근무 요일은 기간마다 회전" />
           <q-select v-else-if="prefsForm.group === 'h8'" v-model="prefsForm.shift"
             :options="SHIFT8_OPTIONS" label="교대 (8시간 고정)" outlined dense emit-value map-options
-            hint="2주 10일 근무 — 주말은 2주에 1일만(슬롯 로테이션), 기본 최대 주 5일" />
+            hint="2주 10일 근무 — 격주 주말(한 주말 근무·다음 주말 휴무), 기본 최대 주 5일" />
           <q-toggle v-if="prefsForm.group === 'h8'" v-model="prefsForm.extra" dense
             label="추가 근무 선호 — 주말이 낀 주 6일 근무 허용"
             class="q-mt-sm" color="orange" />
