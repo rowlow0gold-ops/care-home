@@ -8,12 +8,13 @@
 // '발행'은 위 규칙으로 2주치 근무를 계산해 서버에 확정 저장(solid data)한다.
 // 인원 매칭: 입소(요양) 어르신 실시간 수 기준 1:10 — 매 시간 커버리지 검사.
 import { ref, computed, onMounted, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useQuasar } from "quasar";
 import { server, type OrgPerson, type RosterEntry, type UpsertRoster } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
+const route = useRoute();
 const router = useRouter();
 const session = useServerSessionStore();
 const canPublish = computed(() => session.canEdit);
@@ -344,7 +345,24 @@ function dayBlocks(ds: string): Array<{ block: Block; list: RosterEntry[] }> {
 }
 
 function goStaffPage() { router.push("/staff"); }
-onMounted(loadAll);
+// 팝업에서 이름 클릭 → 직원 상세. 상세의 '근무표' 버튼이 이 날짜 팝업으로 되돌린다.
+function openStaffFromDay(e: RosterEntry) {
+  router.push(`/staff/${e.user_id}?from=schedule&day=${dayDs.value}`);
+}
+onMounted(async () => {
+  await loadAll();
+  // 직원 상세에서 복귀(?day=…): 그 날짜의 기간으로 이동 후 팝업을 다시 연다
+  const day = typeof route.query.day === "string" ? route.query.day : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    const d = new Date(day + "T00:00:00");
+    const ps = periodStartOf(d);
+    if (localDateStr(ps) !== localDateStr(periodStart.value)) {
+      periodStart.value = ps;
+      await loadEntries().catch(() => {});
+    }
+    openDay(d);
+  }
+});
 </script>
 
 <template>
@@ -482,8 +500,10 @@ onMounted(loadAll);
               <span class="text-caption text-grey-6 q-ml-sm">{{ list.length }}명</span>
             </div>
             <div class="row q-gutter-xs">
-              <q-chip v-for="e in list" :key="e.id" dense size="sm" color="grey-2" text-color="grey-9">
+              <q-chip v-for="e in list" :key="e.id" dense clickable size="sm" color="grey-2" text-color="grey-9"
+                @click="openStaffFromDay(e)">
                 {{ e.staff_name }}
+                <q-tooltip>클릭 → 직원 상세 (근무표 버튼으로 이 팝업에 복귀)</q-tooltip>
               </q-chip>
             </div>
           </div>

@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useQuasar } from "quasar";
-import { server, type OrgPerson } from "@/lib/server";
+import { server, type OrgPerson, type RosterEntry } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const route = useRoute();
@@ -14,9 +14,17 @@ const id = computed(() => String(route.params.id));
 const canEdit = computed(() => session.canEdit);
 const canDelete = computed(() => session.canDelete);
 
-// 어디서 들어왔는지에 따라 뒤로가기 목적지를 정한다 (휴가 탭에서 왔으면 휴가로).
-const backTo = computed(() => (route.query.from === "leave" ? "/leave" : "/staff"));
-const backLabel = computed(() => (route.query.from === "leave" ? "휴가" : "직원 목록"));
+// 어디서 들어왔는지에 따라 뒤로가기 목적지를 정한다.
+// 스케쥴러 팝업에서 이름을 눌러 들어왔으면(from=schedule&day=…) 그 날짜 팝업으로 복귀.
+const backTo = computed(() => {
+  if (route.query.from === "schedule") {
+    const day = route.query.day ? `?day=${route.query.day}` : "";
+    return `/schedule${day}`;
+  }
+  return route.query.from === "leave" ? "/leave" : "/staff";
+});
+const backLabel = computed(() =>
+  route.query.from === "schedule" ? "근무표" : route.query.from === "leave" ? "휴가" : "직원 목록");
 
 const person = ref<OrgPerson | null>(null);
 const loading = ref(false);
@@ -51,6 +59,53 @@ async function load() {
   try { person.value = await server.staffOne(id.value); }
   catch (e: any) { $q.notify({ type: "negative", message: `직원 정보를 불러오지 못했습니다: ${e?.message ?? e}` }); }
   finally { loading.value = false; }
+}
+
+// ── 개인 2주 근무표 — 발행된 근무에서 본인 것만 ─────────────────────────────
+const GROUP_KO: Record<string, string> = { h12: "12시간조", h8: "8시간조" };
+const SHIFT_KO: Record<string, string> = { day: "주간", evening: "오후", night: "야간" };
+const groupText = computed(() => {
+  if (!person.value?.shift_group) return "미지정";
+  const g = person.value.shift_group;
+  const sh = SHIFT_KO[person.value.preferred_shift ?? "day"] ?? "";
+  return `${GROUP_KO[g] ?? g} ${g === "h12" && person.value.preferred_shift !== "night" ? "Day" : g === "h12" ? "Night" : sh}`;
+});
+const DAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
+const EPOCH = new Date(2026, 0, 4); // 스케쥴러와 같은 2주 기간 기준점 (일요일)
+function localDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function addDays(d: Date, n: number): Date {
+  const c = new Date(d.getFullYear(), d.getMonth(), d.getDate()); c.setDate(c.getDate() + n); return c;
+}
+const anchor = (() => { // from=schedule 의 day 가 속한 기간, 없으면 오늘 기간
+  const q = typeof route.query.day === "string" ? new Date(route.query.day + "T00:00:00") : new Date();
+  const base = isNaN(q.getTime()) ? new Date() : q;
+  const idx = Math.floor((new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime() - EPOCH.getTime()) / 86400000 / 14);
+  return addDays(EPOCH, idx * 14);
+})();
+const periodDays = Array.from({ length: 14 }, (_, i) => addDays(anchor, i));
+const periodLabel = `${anchor.getFullYear()}.${anchor.getMonth() + 1}.${anchor.getDate()} ~ ${periodDays[13].getMonth() + 1}.${periodDays[13].getDate()}`;
+const myShifts = ref<Map<string, RosterEntry>>(new Map());
+const rosterLoaded = ref(false);
+async function loadMyRoster() {
+  try {
+    const rows = await server.roster(localDateStr(periodDays[0]), localDateStr(periodDays[13]));
+    const m = new Map<string, RosterEntry>();
+    for (const r of rows) if (r.user_id === id.value) m.set(r.shift_date, r);
+    myShifts.value = m;
+  } catch { /* 미발행/조회 실패 → 빈 표 */ }
+  rosterLoaded.value = true;
+}
+function shiftClass(e: RosterEntry | undefined): string {
+  if (!e) return "cell-off";
+  if (e.shift_hours >= 12) return Number(e.shift_start.slice(0, 2)) < 12 ? "cell-12d" : "cell-12n";
+  const h = Number(e.shift_start.slice(0, 2));
+  return h < 12 ? "cell-8d" : h < 20 ? "cell-8e" : "cell-8n";
+}
+function shiftLabel(e: RosterEntry | undefined): string {
+  if (!e) return "휴무";
+  return `${e.shift_start}–${e.shift_end}`;
 }
 
 // ── Edit ──────────────────────────────────────────────────────────────────
@@ -100,7 +155,7 @@ function confirmDeactivate() {
   });
 }
 
-onMounted(load);
+onMounted(() => { load(); loadMyRoster(); });
 </script>
 
 <template>
@@ -127,7 +182,32 @@ onMounted(load);
           <q-item><q-item-section>연락처</q-item-section><q-item-section side>{{ person.phone || "—" }}</q-item-section></q-item>
           <q-item><q-item-section>소속</q-item-section><q-item-section side>{{ person.branch_name ?? "—" }}</q-item-section></q-item>
           <q-item><q-item-section>입사일</q-item-section><q-item-section side>{{ person.hired_on ?? "—" }}</q-item-section></q-item>
+          <q-item><q-item-section>근무조</q-item-section><q-item-section side>{{ groupText }}</q-item-section></q-item>
         </q-list>
+      </q-card-section>
+    </q-card>
+
+    <!-- 개인 2주 근무표 (발행분) -->
+    <q-card flat bordered class="q-mt-md">
+      <q-card-section class="row items-center q-pb-sm">
+        <div class="text-subtitle1 text-weight-bold">2주 근무표</div>
+        <span class="text-caption text-grey-6 q-ml-sm">{{ periodLabel }}</span>
+        <q-space />
+        <span class="text-caption text-grey-6">근무 {{ myShifts.size }}일 / 휴무 {{ 14 - myShifts.size }}일</span>
+      </q-card-section>
+      <q-separator />
+      <q-card-section v-if="rosterLoaded && !myShifts.size" class="text-center text-grey-5 q-py-lg">
+        이 기간에 발행된 근무가 없습니다
+      </q-card-section>
+      <q-card-section v-else class="q-pt-sm">
+        <div class="sched-grid">
+          <div v-for="(d, i) in periodDays" :key="i" class="sched-cell" :class="shiftClass(myShifts.get(localDateStr(d)))">
+            <div class="text-caption" :class="d.getDay() === 0 ? 'text-red' : d.getDay() === 6 ? 'text-blue' : 'text-grey-7'">
+              {{ d.getMonth() + 1 }}/{{ d.getDate() }} ({{ DAY_KO[d.getDay()] }})
+            </div>
+            <div class="text-caption text-weight-medium">{{ shiftLabel(myShifts.get(localDateStr(d))) }}</div>
+          </div>
+        </div>
       </q-card-section>
     </q-card>
 
@@ -159,3 +239,14 @@ onMounted(load);
     </q-dialog>
   </q-page>
 </template>
+
+<style scoped>
+.sched-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.sched-cell { border-radius: 6px; padding: 6px; text-align: center; border: 1px solid #f1f5f9; }
+.cell-off { background: #f8fafc; color: #94a3b8; }
+.cell-12d { background: #fef3c7; }
+.cell-12n { background: #e0e7ff; }
+.cell-8d { background: #d1fae5; }
+.cell-8e { background: #ffedd5; }
+.cell-8n { background: #dbeafe; }
+</style>
