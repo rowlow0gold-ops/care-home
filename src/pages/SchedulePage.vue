@@ -130,8 +130,8 @@ const groupStats = computed(() => {
 });
 const unassigned = computed(() => caregivers.value.filter((p) => !p.shift_group));
 
-// ── 필요 인원 (실시간 입소 어르신 1:10, 최소 2명) ────────────────────────────
-const required = computed(() => Math.max(2, Math.ceil(Math.max(elders.value, 1) / 10)));
+// ── 필요 인원 (실시간 입소 어르신 1:10) ──────────────────────────────────────
+const required = computed(() => Math.max(1, Math.ceil(elders.value / 10)));
 
 // ── 표시용: 날짜별 블록별 명단 ───────────────────────────────────────────────
 const byDate = computed<Map<string, Map<string, RosterEntry[]>>>(() => {
@@ -383,7 +383,7 @@ onMounted(loadAll);
       <div class="col-12 col-md-7">
         <q-banner dense rounded class="bg-blue-1 text-blue-10 full-height">
           <template #avatar><q-icon name="o_diversity_3" /></template>
-          입소 어르신 <b>{{ elders }}명</b> (실시간) → 매 시간 요양보호사 <b>{{ required }}명</b> 필요 (1:10 · 최소 2명)<br />
+          입소 어르신 <b>{{ elders }}명</b> (실시간) → 매 시간 요양보호사 <b>{{ required }}명</b> 필요 (1:10)<br />
           <span class="text-caption">
             조 구성: 12시간조 {{ groupStats.h12d + groupStats.h12n }}명 (Day {{ groupStats.h12d }} / Night {{ groupStats.h12n }})
             · 8시간조 {{ groupStats.h8 }}명 · 알바조 {{ groupStats.pt }}명
