@@ -1189,6 +1189,7 @@ const showAlerts = ref(true);
           />
         </div>
         <q-btn
+          v-if="genConfigured"
           outline no-caps dense color="grey-8" icon="o_add"
           label="근무 유형 추가"
           class="palette-custom-btn"
