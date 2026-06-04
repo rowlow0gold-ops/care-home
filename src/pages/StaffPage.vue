@@ -39,20 +39,34 @@ const EMPLOYMENT_OPTIONS = [
   { label: "아르바이트", value: "part_time" },
   { label: "위촉직", value: "consultant" },
 ];
-// 근무 성향 (북미식 고정 쉬프트) — 직원이 원하는 교대·요일을 시스템이 존중한다
-const SHIFT_PREF_OPTIONS = [
-  { label: "무관 (어디든 가능)", value: null as string | null },
-  { label: "주간 선호", value: "day" },
-  { label: "오후 선호", value: "evening" },
-  { label: "야간 선호", value: "night" },
+// 근무조 (북미식 2주 스케줄) — 직원마다 조가 고정되고 2주 단위로 발행된다
+const GROUP_OPTIONS = [
+  { label: "미지정 (스케줄 제외)", value: null as string | null },
+  { label: "요양 12시간조 — 3일 근무·4일 휴무", value: "h12" },
+  { label: "요양 8시간 교대조 — 고정 쉬프트·주 5일", value: "h8" },
+  { label: "요양 알바조 — 지정 요일만", value: "pt" },
+];
+const GROUP_KO: Record<string, string> = { h12: "12시간조", h8: "8시간조", pt: "알바조" };
+const SHIFT12_OPTIONS = [
+  { label: "Day 07:00–19:30", value: "day" },
+  { label: "Night 19:00–07:30", value: "night" },
+];
+const SHIFT8_OPTIONS = [
+  { label: "주간 07:00–15:00", value: "day" },
+  { label: "오후 15:00–23:00", value: "evening" },
+  { label: "야간 23:00–07:00", value: "night" },
 ];
 const SHIFT_PREF_KO: Record<string, string> = { day: "주간", evening: "오후", night: "야간" };
 const DAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
 const DAY_OPTIONS = DAY_KO.map((d, i) => ({ label: d, value: i }));
 function prefText(p: OrgPerson): string {
-  const shift = p.preferred_shift ? SHIFT_PREF_KO[p.preferred_shift] ?? p.preferred_shift : "무관";
-  const days = p.work_days?.length ? p.work_days.map((d) => DAY_KO[d]).join("·") : "매일";
-  return `${shift} / ${days}`;
+  if (!p.shift_group) return "미지정";
+  const shift = p.preferred_shift ? SHIFT_PREF_KO[p.preferred_shift] ?? p.preferred_shift : "?";
+  if (p.shift_group === "pt") {
+    const days = p.work_days?.length ? p.work_days.map((d) => DAY_KO[d]).join("·") : "?";
+    return `알바 ${days} ${shift}`;
+  }
+  return `${GROUP_KO[p.shift_group] ?? p.shift_group} ${shift}`;
 }
 
 const ROLE_OPTIONS = [
@@ -113,7 +127,7 @@ const columns = [
   { name: "branch_name", label: "소속", field: "branch_name", align: "left" as const },
   { name: "position_ko", label: "직책", field: "position_ko", align: "left" as const },
   { name: "employment_type_ko", label: "고용", field: "employment_type_ko", align: "left" as const },
-  { name: "work_prefs", label: "근무 성향", field: "preferred_shift", align: "left" as const },
+  { name: "work_prefs", label: "근무조", field: "shift_group", align: "left" as const },
   { name: "tenure", label: "경력", field: "hired_on", align: "left" as const },
   { name: "email", label: "이메일", field: "email", align: "left" as const },
   { name: "phone", label: "전화", field: "phone", align: "left" as const },
@@ -208,28 +222,39 @@ async function submitEdit() {
   }
 }
 
-// ── 근무 성향 편집 — 센터(행정)에서 직접 관리 ────────────────────────────────
+// ── 근무조 편집 — 센터(행정)에서 직접 관리 ──────────────────────────────────
 const showPrefsDialog = ref(false);
 const prefsTarget = ref<OrgPerson | null>(null);
-const prefsForm = ref<{ preferred_shift: string | null; days: number[] }>({ preferred_shift: null, days: [] });
+const prefsForm = ref<{ group: string | null; shift: string | null; days: number[] }>({ group: null, shift: null, days: [] });
 function openPrefs(p: OrgPerson) {
   prefsTarget.value = p;
-  prefsForm.value = { preferred_shift: p.preferred_shift ?? null, days: [...(p.work_days ?? [])] };
+  prefsForm.value = { group: p.shift_group ?? null, shift: p.preferred_shift ?? null, days: [...(p.work_days ?? [])] };
   showPrefsDialog.value = true;
 }
+// 조를 바꾸면 교대 기본값을 보정 (12시간조에는 '오후'가 없다)
+watch(() => prefsForm.value.group, (g) => {
+  if (g === "h12" && prefsForm.value.shift !== "night") prefsForm.value.shift = "day";
+  if ((g === "h8" || g === "pt") && !prefsForm.value.shift) prefsForm.value.shift = "day";
+});
 async function submitPrefs() {
   if (!prefsTarget.value) return;
+  const f = prefsForm.value;
+  if (f.group === "pt" && !f.days.length) {
+    $q.notify({ type: "negative", message: "알바조는 근무 요일을 1개 이상 선택하세요." });
+    return;
+  }
   submitting.value = true;
   try {
     await server.updateWorkPrefs(prefsTarget.value.id, {
-      preferred_shift: prefsForm.value.preferred_shift,
-      work_days: prefsForm.value.days.length ? [...prefsForm.value.days].sort((a, b) => a - b) : null,
+      shift_group: f.group,
+      preferred_shift: f.group ? f.shift : null,
+      work_days: f.group === "pt" && f.days.length ? [...f.days].sort((a, b) => a - b) : null,
     });
-    $q.notify({ type: "positive", message: `${prefsTarget.value.full_name}님의 근무 성향을 저장했습니다. 자동 생성이 이를 존중합니다.` });
+    $q.notify({ type: "positive", message: `${prefsTarget.value.full_name}님의 근무조를 저장했습니다. 다음 2주 스케줄 발행에 반영됩니다.` });
     showPrefsDialog.value = false;
     await load();
   } catch (e: any) {
-    $q.notify({ type: "negative", message: `저장 실패: ${e?.message ?? e}` });
+    $q.notify({ type: "negative", message: `저장 실패: ${e?.body?.message ?? e?.message ?? e}` });
   } finally {
     submitting.value = false;
   }
@@ -305,11 +330,11 @@ onMounted(() => { load(); });
       </template>
       <template #body-cell-work_prefs="props">
         <q-td :props="props">
-          <q-chip dense clickable size="sm" :color="props.row.preferred_shift || props.row.work_days?.length ? 'teal-1' : 'grey-2'"
-            :text-color="props.row.preferred_shift || props.row.work_days?.length ? 'teal-9' : 'grey-7'"
+          <q-chip dense clickable size="sm" :color="props.row.shift_group ? 'teal-1' : 'grey-2'"
+            :text-color="props.row.shift_group ? 'teal-9' : 'grey-7'"
             icon="o_tune" @click.stop="openPrefs(props.row)">
             {{ prefText(props.row) }}
-            <q-tooltip>클릭하여 선호 교대·가능 요일 수정</q-tooltip>
+            <q-tooltip>클릭하여 근무조 수정</q-tooltip>
           </q-chip>
         </q-td>
       </template>
@@ -371,22 +396,27 @@ onMounted(() => { load(); });
       </q-card>
     </q-dialog>
 
-    <!-- 근무 성향 Dialog -->
+    <!-- 근무조 Dialog -->
     <q-dialog v-model="showPrefsDialog">
-      <q-card style="min-width: 440px">
+      <q-card style="min-width: 460px">
         <q-card-section class="row items-center q-pb-none">
-          <div class="text-h6">근무 성향 — {{ prefsTarget?.full_name }}</div><q-space />
+          <div class="text-h6">근무조 — {{ prefsTarget?.full_name }}</div><q-space />
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
         <q-card-section class="q-gutter-md">
           <div class="text-caption text-grey-7">
-            북미식 고정 쉬프트 — 직원이 원하는 교대와 요일을 스케줄 자동 생성이
-            <b>절대 규칙</b>으로 존중합니다. (예: 일요일만 근무하는 아르바이트)
+            북미식 2주 스케줄 — 직원마다 조가 고정되고, 스케쥴러에서 2주 단위로 발행됩니다.
           </div>
-          <q-select v-model="prefsForm.preferred_shift" :options="SHIFT_PREF_OPTIONS" label="선호 교대"
+          <q-select v-model="prefsForm.group" :options="GROUP_OPTIONS" label="근무조"
             outlined dense emit-value map-options />
-          <div>
-            <div class="text-caption text-grey-7 q-mb-xs">가능 요일 — 아무것도 선택하지 않으면 모든 요일 가능</div>
+          <q-select v-if="prefsForm.group === 'h12'" v-model="prefsForm.shift" :options="SHIFT12_OPTIONS"
+            label="교대 (12시간)" outlined dense emit-value map-options
+            hint="3일 연속 근무 후 4일 휴무 — 주 36시간" />
+          <q-select v-else-if="prefsForm.group === 'h8' || prefsForm.group === 'pt'" v-model="prefsForm.shift"
+            :options="SHIFT8_OPTIONS" label="교대 (8시간 고정)" outlined dense emit-value map-options
+            :hint="prefsForm.group === 'h8' ? '같은 시간대로 주 5일 근무 — 주 40시간' : '지정한 요일에만 이 교대로 근무'" />
+          <div v-if="prefsForm.group === 'pt'">
+            <div class="text-caption text-grey-7 q-mb-xs">근무 요일 (1개 이상 — 예: 일요일만)</div>
             <q-option-group v-model="prefsForm.days" :options="DAY_OPTIONS" type="checkbox" inline dense />
           </div>
         </q-card-section>

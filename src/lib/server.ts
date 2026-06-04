@@ -450,8 +450,8 @@ export const server = {
       body: JSON.stringify({ team_id: teamId }),
     });
   },
-  /** 근무 성향 저장 — 자동 생성이 절대 규칙으로 존중 */
-  updateWorkPrefs(staffId: string, prefs: { preferred_shift: string | null; work_days: number[] | null }) {
+  /** 근무조 저장 — 2주 스케줄 발행의 기준 데이터 */
+  updateWorkPrefs(staffId: string, prefs: { shift_group: string | null; preferred_shift: string | null; work_days: number[] | null }) {
     return fetchJson<{ ok: boolean }>(`/api/v1/staff/${staffId}/work-prefs`, {
       method: "PATCH",
       body: JSON.stringify(prefs),
@@ -483,6 +483,13 @@ export const server = {
   },
   deleteTeam(id: string) {
     return fetchJson(`/api/v1/teams/${id}`, { method: "DELETE" });
+  },
+  /** 2주 스케줄 발행 — 기간 내 지점 전체 교체 후 일괄 삽입 */
+  rosterBulk(start: string, end: string, entries: UpsertRoster[]) {
+    return fetchJson<{ ok: boolean; deleted: number; inserted: number }>("/api/v1/roster/bulk", {
+      method: "POST",
+      body: JSON.stringify({ start, end, entries }),
+    });
   },
   createRoster(payload: UpsertRoster) {
     return fetchJson<RosterEntry>("/api/v1/roster", {
@@ -787,7 +794,9 @@ export interface OrgPerson {
   contract_end_on: string | null;
   monthly_salary_krw: number | null;
   hourly_rate_est_krw: number | null;
-  /** 선호 교대 (북미식 고정 쉬프트): 'day' | 'evening' | 'night' | null(무관) */
+  /** 근무조: 'h12'(12시간 3일근무·4일휴무) | 'h8'(8시간 고정) | 'pt'(알바) | null(미지정) */
+  shift_group: string | null;
+  /** 교대: h12 → 'day'|'night' · h8/pt → 'day'|'evening'|'night' */
   preferred_shift: string | null;
   /** 가능 요일 0=일 … 6=토; null = 모든 요일 가능 (예: 일요일만 아르바이트 = [0]) */
   work_days: number[] | null;
