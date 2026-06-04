@@ -415,13 +415,12 @@ async function loadPresets() {
     const s = await presetsStore();
     customPresets.value = (await s.get<Preset[]>("custom_presets")) ?? [];
     // 저장된 자동 생성 설정 복원 → 근무 유형 팔레트에 반영
-    const gf = await s.get<{ pattern: string; maxWeekHours: number; shiftStarts: string[]; resetExisting?: boolean }>("gen_form");
+    const gf = await s.get<{ pattern: string; maxWeekHours: number; shiftStarts: string[] }>("gen_form");
     if (gf?.pattern && Array.isArray(gf.shiftStarts) && PATTERNS.some((x) => x.value === gf.pattern)) {
       genForm.value.pattern = gf.pattern;
       await nextTick(); // 패턴 watcher 가 shiftStarts 를 리셋한 뒤에 복원
       genForm.value.maxWeekHours = gf.maxWeekHours ?? 52;
       genForm.value.shiftStarts = gf.shiftStarts;
-      genForm.value.resetExisting = gf.resetExisting ?? true;
       // 시작일(startMode/startDate)은 복원하지 않는다 — 항상 '오늘부터'로 시작
       // genConfigured 는 복원하지 않는다 — 팔레트는 항상 비어 있게 시작하고,
       // 이번 세션에서 자동 생성을 실행해야 근무 유형이 나타난다.
@@ -754,7 +753,6 @@ const genForm = ref({
   pattern: "ddnn", maxWeekHours: 52, shiftStarts: ["07:00", "19:00"],
   startMode: "today" as "today" | "date", // 시작일: 오늘부터 / 지정일부터
   startDate: localDateStr(new Date()),    // startMode === "date" 일 때 사용
-  resetExisting: true, // 생성 기간 내 기존 근무 초기화 후 생성
 });
 // 패턴을 바꾸면 시작 시각·주 최대시간을 그 패턴 기본값으로 리셋
 watch(() => genForm.value.pattern, () => {
@@ -850,6 +848,7 @@ async function openGenerate() {
 async function runGeneration() {
   const team = genTeam.value;
   if (!team) return;
+  if (!(await confirmSpanReset())) return; // 기존 데이터 확인 — 취소 시 중단
   if (team.team_type === "day") {
     showGenDialog.value = false;
     saveGenSettings();
@@ -857,6 +856,30 @@ async function runGeneration() {
   } else {
     await runPatternGeneration();
   }
+}
+
+// 대상 기간에 기존 근무가 있으면 확인을 받고 초기화(드래프트)한다. 없으면 바로 진행.
+async function confirmSpanReset(): Promise<boolean> {
+  const { dates } = spanDates();
+  const first = dates[0], last = dates[dates.length - 1];
+  let count = 0;
+  try {
+    const rows = await server.roster(first, last, selectedTeam.value || undefined);
+    count = rows.filter((r) => !pendingDeletes.value.has(r.id)).length;
+  } catch { /* 조회 실패 시 0으로 간주 */ }
+  count += pendingCreates.value.filter((c) => c.shift_date >= first && c.shift_date <= last).length;
+  if (count === 0) return true;
+  const ok = await new Promise<boolean>((resolve) => {
+    $q.dialog({
+      title: "기존 근무 초기화",
+      message: `${first} ~ ${last} 기간에 기존 근무 ${count}건이 있습니다. 모두 초기화하고 새로 생성할까요? (저장 전까지 되돌리기 가능)`,
+      ok: { label: "초기화 후 생성", color: "negative", unelevated: true },
+      cancel: { label: "취소", flat: true },
+      persistent: true,
+    }).onOk(() => resolve(true)).onCancel(() => resolve(false)).onDismiss(() => resolve(false));
+  });
+  if (ok) await resetSpan(dates);
+  return ok;
 }
 
 // 생성 기간 내 기존 근무 초기화 — 드래프트로 처리(저장 전 미반영, 되돌리기 가능).
@@ -924,7 +947,6 @@ async function generateDayTeam(team: Team) {
     const maxH = Math.max(8, genForm.value.maxWeekHours || 52);
     const W = genWorkers.value;
     const { days, dates } = spanDates();
-    if (genForm.value.resetExisting) await resetSpan(dates);
     const onLeave = await collectApprovedLeave(dates);
     const { existing, addHours, hoursOf } = await buildSpanState(dates);
     const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
@@ -989,7 +1011,6 @@ async function runPatternGeneration() {
     const groups: OrgPerson[][] = Array.from({ length: pat.groups }, () => []);
     genWorkers.value.forEach((w, i) => groups[i % pat.groups].push(w));
     const { days, dates } = spanDates();
-    if (genForm.value.resetExisting) await resetSpan(dates);
     const onLeave = await collectApprovedLeave(dates);
     const { existing, addHours, hoursOf } = await buildSpanState(dates);
 
@@ -1548,7 +1569,7 @@ const showAlerts = ref(true);
     <q-dialog v-model="showGenDialog">
       <q-card style="min-width: 460px">
         <q-card-section class="row items-center q-pb-none">
-          <div class="text-h6">자동 생성 — 24시간 교대</div>
+          <div class="text-h6">자동 생성</div>
           <q-space />
           <q-btn icon="o_close" flat round dense v-close-popup />
         </q-card-section>
@@ -1591,7 +1612,6 @@ const showAlerts = ref(true);
           </template>
           <q-input v-else v-model.number="genForm.maxWeekHours" type="number" outlined dense
             label="주 최대 근무시간" suffix="h" hint="기본 52h" />
-          <q-checkbox v-model="genForm.resetExisting" dense label="기존 근무 초기화 후 생성 (대상 32일 전체, 저장 전까지 되돌리기 가능)" />
           <div class="text-caption text-grey-7">
             <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.<br />
             <q-icon name="o_groups_2" size="14px" /> 요양팀은 교대당 최소 2명(팀메이트)이 함께 배치됩니다.
