@@ -526,6 +526,12 @@ function netHours(start: string, end: string): number {
   const block = hoursBetween(start, end);
   return Math.max(0.5, Math.round((block - breakHoursOf(block)) * 10) / 10);
 }
+// "HH:MM" + 분 (24시간 래핑)
+function addToHM(hm: string, mins: number): string {
+  const [h, m] = hm.split(":").map(Number);
+  const t = (((h * 60 + m + mins) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
 async function addNewType() {
   const t = newType.value;
   if (!t.label.trim() || !/^\d{2}:\d{2}$/.test(t.start) || !/^\d{2}:\d{2}$/.test(t.end)) {
@@ -780,16 +786,23 @@ watch(() => genForm.value.pattern, () => {
   const pat = PATTERNS.find((p) => p.value === genForm.value.pattern) ?? PATTERNS[0];
   genForm.value.shiftStarts = pat.shifts.map((s) => s.start);
 });
-// 커스텀 시작 시각 → 교대 파생. 종료 = 다음 교대의 시작 (24시간 빈틈 없이 커버).
+// 커스텀 시작 시각 → 교대 파생. 체류시간 = 식사 포함:
+//   3교대(8/8/8): 9시간 체류(실근무 8h+식사 1h) → 교대 간 1시간 겹침(인수인계·식사 커버)
+//   2교대(12h):  12시간 체류(실근무 10.5h, 휴게 1.5h 포함)
 const genShifts = computed<PatShift[]>(() => {
   const starts = genForm.value.shiftStarts;
   const names = starts.length === 2 ? SHIFT_NAMES_2 : SHIFT_NAMES_3;
-  return starts.map((s, i) => ({ name: names[i] ?? `교대${i + 1}`, start: s, end: starts[(i + 1) % starts.length] }));
+  const stayMin = (starts.length === 2 ? 12 : 9) * 60;
+  return starts.map((s, i) => ({ name: names[i] ?? `교대${i + 1}`, start: s, end: addToHM(s, stayMin) }));
 });
 const genWorkers = ref<OrgPerson[]>([]);
 const genTeam = computed(() => teams.value.find((t) => t.id === selectedTeam.value) ?? null);
 const genElders = computed(() => (genTeam.value ? activeResidents.value.filter((r) => r.team_id === genTeam.value!.id).length : 0));
-const genRequired = computed(() => Math.max(1, Math.ceil(genElders.value / 10)));
+// 교대당 필요 인원: 1:10 + 요양팀은 최소 2명(2인 1조 페어 — 식사·응급 커버)
+const genRequired = computed(() => {
+  const base = Math.max(1, Math.ceil(genElders.value / 10));
+  return genTeam.value?.team_type === "residential" ? Math.max(2, base) : base;
+});
 const genPattern = computed(() => PATTERNS.find((p) => p.value === genForm.value.pattern) ?? PATTERNS[0]);
 const genGroupMin = computed(() => Math.floor(genWorkers.value.length / genPattern.value.groups));
 const genGroupMax = computed(() => Math.ceil(genWorkers.value.length / genPattern.value.groups));
@@ -1002,12 +1015,16 @@ async function runPatternGeneration() {
       !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) &&
       hoursOf(w.id, ds) + h <= maxH && daysOf(w.id, ds) < maxDays;
     const fresh: ScheduleEntry[] = [];
-    const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, tag: string) => {
+    // 2인 1조 페어: 같은 교대의 짝수 번째 인원은 +30분 늦게 출근 — 식사·인수인계를 서로 커버
+    const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, tag: string, slot: number) => {
+      const off = slot % 2 === 1 ? 30 : 0;
+      const st = off ? addToHM(sh.start, off) : sh.start;
+      const en = off ? addToHM(sh.end, off) : sh.end;
       existing.add(`${w.id}-${ds}`);
       addHours(w.id, ds, sh.hours);
       fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
-        shift_start: sh.start, shift_end: sh.end, shift_hours: sh.hours,
-        notes: `${team.name} ${sh.name}${tag}` });
+        shift_start: st, shift_end: en, shift_hours: sh.hours,
+        notes: `${team.name} ${sh.name}${tag}${off ? " ·페어B" : ""}` });
     };
 
     const ptrs = groups.map(() => 0);
@@ -1022,7 +1039,7 @@ async function runPatternGeneration() {
         while (filled < required && tries < g.length) {
           const w = g[ptrs[gi] % g.length]; ptrs[gi]++; tries++;
           if (!canWork(w, ds, sh.hours)) continue;
-          assign(w, ds, sh, `(${["A", "B", "C", "D"][gi] ?? gi + 1}조)`);
+          assign(w, ds, sh, `(${["A", "B", "C", "D"][gi] ?? gi + 1}조)`, filled);
           filled++;
         }
         // 2차 백필: 휴가·한도로 부족하면 그날 쉬는 인력 중 누적시간 적은 순으로 대체
@@ -1032,7 +1049,7 @@ async function runPatternGeneration() {
             .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
           for (const w of subs) {
             if (filled >= required) break;
-            assign(w, ds, sh, " 대체");
+            assign(w, ds, sh, " 대체", filled);
             filled++;
           }
         }
@@ -1044,7 +1061,7 @@ async function runPatternGeneration() {
             .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
           for (const w of forced) {
             if (filled >= required) break;
-            assign(w, ds, sh, " 초과");
+            assign(w, ds, sh, " 초과", filled);
             filled++;
             overtime++;
           }
@@ -1103,7 +1120,8 @@ const staffingAlerts = computed<Alert[]>(() => {
   if (!team || team.team_type === "visit") return [];
   const elders = activeResidents.value.filter((r) => r.team_id === team.id).length;
   if (!elders) return [];
-  const required = Math.max(1, Math.ceil(elders / 10)); // 1:10
+  const base = Math.max(1, Math.ceil(elders / 10)); // 1:10
+  const required = team.team_type === "residential" ? Math.max(2, base) : base; // 요양: 페어 최소 2명
   // 점검 대상 시간대
   let checkHours: number[];
   if (team.team_type === "residential") {
@@ -1573,10 +1591,14 @@ const showAlerts = ref(true);
           <q-input v-else v-model.number="genForm.maxWeekHours" type="number" outlined dense
             label="주 최대 근무시간" suffix="h" hint="기본 52h" />
           <q-checkbox v-model="genForm.resetExisting" dense label="기존 근무 초기화 후 생성 (대상 4주 전체, 저장 전까지 되돌리기 가능)" />
+          <q-banner v-if="genTeam?.team_type === 'residential'" dense rounded class="bg-blue-1 text-blue-10">
+            <template #avatar><q-icon name="o_groups_2" /></template>
+            <b>체류·페어 규칙</b><br />
+            · {{ genForm.shiftStarts.length === 2 ? "12시간 체류 (휴게 1.5h 포함, 실근무 10.5h)" : "교대당 9시간 체류 (식사 1h 포함, 실근무 8h) — 교대 간 1시간 겹침으로 인수인계" }}<br />
+            · 2인 1조 페어: 짝은 30분 차이로 출근해 식사·응급 시 서로 커버합니다 (교대당 최소 2명).
+          </q-banner>
           <div class="text-caption text-grey-7">
-            <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.<br />
-            <q-icon name="o_restaurant" size="14px" /> 휴게(식사)시간은 4시간당 30분씩 근무시간에서 자동 차감됩니다
-            (8h 교대 → 7h, 12h 교대 → 10.5h 인정).
+            <q-icon name="o_event" size="14px" /> 승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
           </div>
           <q-banner dense rounded
             :class="genShort ? 'bg-red-1 text-red-9' : genOvertimeExpected ? 'bg-orange-1 text-orange-10' : 'bg-green-1 text-green-9'">
