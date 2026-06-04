@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useRouter } from "vue-router";
 import { useQuasar } from "quasar";
-import { server, type Resident, type Team } from "@/lib/server";
+import { server, type Resident } from "@/lib/server";
 import { useServerSessionStore } from "@/stores/server-session";
 
 const $q = useQuasar();
@@ -126,28 +126,17 @@ const emptyAdd = () => ({
   birth_date: "", care_grade: "" as string,
   care_type: "residential" as "residential" | "day" | "visit",
   room_number: "", admitted_on: new Date().toISOString().slice(0, 10),
-  team_id: null as string | null,
 });
 const addForm = ref(emptyAdd());
 const sexOptions = [{ label: "여", value: "female" }, { label: "남", value: "male" }, { label: "기타", value: "other" }];
 const addGradeOptions = gradeOptions.filter((g) => g.value);
-
-// 담당 팀 (선택, 비우면 미배정)
-const teams = ref<Team[]>([]);
-const teamSelectOptions = computed(() => [
-  { label: "미배정", value: null as string | null },
-  ...teams.value.map((t) => ({ label: t.name, value: t.id })),
-]);
-async function loadTeams() {
-  try { teams.value = await server.teams(); } catch { teams.value = []; }
-}
 
 async function submitAdd() {
   const valid = await addRef.value?.validate();
   if (!valid) return;
   submitting.value = true;
   try {
-    const created: any = await server.createResident({
+    await server.createResident({
       full_name: addForm.value.full_name.trim(),
       sex: addForm.value.sex,
       birth_date: addForm.value.birth_date,
@@ -156,10 +145,6 @@ async function submitAdd() {
       room_number: addForm.value.room_number.trim() || null,
       admitted_on: addForm.value.admitted_on,
     });
-    // 팀을 골랐으면 생성 직후 배정 (비우면 미배정).
-    if (addForm.value.team_id && created?.id) {
-      try { await server.assignResidentTeam(created.id, addForm.value.team_id); } catch { /* 배정 실패해도 등록은 됨 */ }
-    }
     $q.notify({ type: "positive", message: "어르신이 등록되었습니다." });
     showAdd.value = false;
     addForm.value = emptyAdd();
@@ -171,7 +156,7 @@ async function submitAdd() {
   }
 }
 
-onMounted(() => { load(); loadTeams(); });
+onMounted(() => { load(); });
 </script>
 
 <template>
@@ -285,7 +270,6 @@ onMounted(() => { load(); loadTeams(); });
             </div>
             <div class="row q-gutter-sm">
               <q-input class="col" v-model="addForm.room_number" label="호실" outlined dense />
-              <q-select class="col" v-model="addForm.team_id" :options="teamSelectOptions" label="담당 팀 (선택)" outlined dense emit-value map-options hint="비우면 미배정" />
             </div>
             <q-input v-model="addForm.admitted_on" label="입소일 *" mask="####-##-##" outlined dense :rules="[(v)=>/^\d{4}-\d{2}-\d{2}$/.test(v)||'YYYY-MM-DD']" lazy-rules="ondemand" />
           </q-form>

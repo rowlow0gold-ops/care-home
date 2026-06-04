@@ -67,7 +67,6 @@ const navGroups: NavGroup[] = [
     heading: "직원",
     items: [
       { to: "/staff",    key: "staff",    icon: "o_badge",          label: "직원" },
-      { to: "/teams",    key: "teams",    icon: "o_groups",         label: "팀" },
     ],
   },
   {
