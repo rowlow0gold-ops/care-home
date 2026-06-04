@@ -98,6 +98,23 @@ async function loadElders() {
   const res = await server.residentsPaged({ care_type: "residential", status: "active", page: 1, page_size: 1 });
   elders.value = res.total;
 }
+// ── 공휴일 — 달력에 표시 (DB holiday API) ────────────────────────────────────
+const holidays = ref<Map<string, string>>(new Map());
+async function loadHolidays() {
+  const years = [...new Set(periodDays.value.map((d) => d.getFullYear()))];
+  const m = new Map<string, string>();
+  for (const y of years) {
+    try {
+      const rows = await server.holidays(y);
+      for (const h of rows) if (h.is_holiday) m.set(h.locdate, h.name);
+    } catch { /* 공휴일 조회 실패 시 표시 생략 */ }
+  }
+  holidays.value = m;
+}
+function holidayName(ds: string): string | null {
+  return holidays.value.get(ds) ?? null;
+}
+
 async function loadEntries() {
   entries.value = await server.roster(localDateStr(periodStart.value), localDateStr(periodEnd.value));
 }
@@ -111,7 +128,7 @@ async function loadAll() {
     loading.value = false;
   }
 }
-watch(periodStart, () => { loadEntries().catch(() => {}); });
+watch(periodStart, () => { loadEntries().catch(() => {}); loadHolidays(); });
 
 function prev() { periodStart.value = addDays(periodStart.value, -14); }
 function next() { periodStart.value = addDays(periodStart.value, 14); }
@@ -373,6 +390,7 @@ function openStaffFromDay(e: RosterEntry) {
   router.push(`/staff/${e.user_id}?from=schedule&day=${dayDs.value}`);
 }
 onMounted(async () => {
+  loadHolidays();
   await loadAll();
   // 직원 상세에서 복귀(?day=…): 그 날짜의 기간으로 이동 후 팝업을 다시 연다
   const day = typeof route.query.day === "string" ? route.query.day : "";
@@ -384,6 +402,7 @@ onMounted(async () => {
       await loadEntries().catch(() => {});
     }
     openDay(d);
+    router.replace({ path: route.path }); // 쿼리 제거 — 닫은 뒤 재오픈 방지
   }
 });
 </script>
@@ -463,11 +482,14 @@ onMounted(async () => {
       <div v-for="(week, wi) in weeks" :key="wi" class="grid7">
         <div v-for="d in week" :key="localDateStr(d)" class="day-cell cursor-pointer"
           :class="localDateStr(d) === todayStr ? 'today-cell' : ''" @click="openDay(d)">
-          <div class="row items-center q-mb-xs">
+          <div class="row items-center q-mb-xs no-wrap">
             <span class="text-caption text-weight-bold"
-              :class="d.getDay() === 0 ? 'text-red' : d.getDay() === 6 ? 'text-blue' : ''">
+              :class="holidayName(localDateStr(d)) || d.getDay() === 0 ? 'text-red' : d.getDay() === 6 ? 'text-blue' : ''">
               {{ d.getMonth() + 1 }}/{{ d.getDate() }}
             </span>
+            <q-badge v-if="holidayName(localDateStr(d))" color="red-2" text-color="red-10" class="q-ml-xs holiday-badge">
+              {{ holidayName(localDateStr(d)) }}
+            </q-badge>
             <q-space />
             <q-badge v-if="dayTotal(localDateStr(d))" color="grey-3" text-color="grey-8">{{ dayTotal(localDateStr(d)) }}명</q-badge>
           </div>
@@ -493,12 +515,15 @@ onMounted(async () => {
     </div>
 
     <!-- 일자 상세 -->
-    <q-dialog v-model="dayDialog">
+    <q-dialog v-model="dayDialog" @hide="dayDialog = false">
       <q-card style="min-width: 520px; max-height: 80vh" class="scroll">
         <q-card-section class="row items-center q-pb-none">
-          <div class="text-h6">{{ dayLabel }} — 근무 {{ dayTotal(dayDs) }}명</div>
+          <div class="text-h6">
+            {{ dayLabel }} — 근무 {{ dayTotal(dayDs) }}명
+            <q-badge v-if="holidayName(dayDs)" color="red-2" text-color="red-10" class="q-ml-sm">{{ holidayName(dayDs) }}</q-badge>
+          </div>
           <q-space />
-          <q-btn icon="o_close" flat round dense v-close-popup />
+          <q-btn icon="o_close" flat round dense @click="dayDialog = false" />
         </q-card-section>
         <q-card-section class="q-gutter-md">
           <!-- 24시간 인원 그래프 — 빨간 점선 = 필요 인원(1:10) -->
@@ -547,6 +572,7 @@ onMounted(async () => {
 .day-cell { min-height: 104px; border: 1px solid #f1f5f9; padding: 6px; }
 .day-cell:hover { background: #f0f9ff; }
 .today-cell { outline: 2px solid var(--q-primary); outline-offset: -2px; }
+.holiday-badge { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
 .hour-chart { display: block; }
 .bar-ok { fill: #34d399; }
 .bar-bad { fill: #f87171; }
