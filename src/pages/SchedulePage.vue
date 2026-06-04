@@ -344,7 +344,19 @@ async function loadTeamStaff(teamId: string) {
 watch(viewMode, loadSchedule);
 watch([weekStartStr, weekEndStr], () => { if (viewMode.value === "week")   loadSchedule(); });
 watch([monthStartStr, monthEndStr], () => { if (viewMode.value === "month") loadSchedule(); });
+// 현재 스케줄러는 요양1팀을 기준으로 구현·검증되어 있다. 그 외 팀(방문1팀·주간1팀·
+// 요양2팀 등)을 선택하면 '준비 중' 알림을 띄운다.
+const READY_TEAM = "요양1팀";
+const teamNotReady = computed(() => {
+  const t = teams.value.find((x) => x.id === selectedTeam.value);
+  return !!t && t.name !== READY_TEAM;
+});
+const selectedTeamName = computed(() => teams.value.find((x) => x.id === selectedTeam.value)?.name ?? "");
+
 watch(selectedTeam, async () => {
+  if (teamNotReady.value) {
+    $q.notify({ type: "warning", icon: "o_construction", message: `'${selectedTeamName.value}' 필터는 아직 구현되지 않았습니다.`, caption: "현재 스케줄러는 요양1팀 기준으로 동작합니다." });
+  }
   if (selectedTeam.value) await loadTeamStaff(selectedTeam.value);
   await loadSchedule();
 });
@@ -765,6 +777,10 @@ async function openGenerate() {
   if (!canCreate.value) return;
   const team = genTeam.value;
   if (!team) { $q.notify({ type: "warning", message: "팀을 선택하세요." }); return; }
+  if (teamNotReady.value) {
+    $q.notify({ type: "warning", icon: "o_construction", message: `'${selectedTeamName.value}' 자동 생성은 아직 구현되지 않았습니다.`, caption: "요양1팀에서 사용해 주세요." });
+    return;
+  }
   if (team.team_type === "visit") { $q.notify({ type: "info", message: "방문팀은 케이스별로 수동 편성합니다." }); return; }
   generating.value = true;
   try {
@@ -1170,6 +1186,12 @@ const showAlerts = ref(true);
         />
       </div>
     </div>
+
+    <!-- 준비 중인 팀 안내 -->
+    <q-banner v-if="teamNotReady" dense rounded class="bg-orange-1 text-orange-10 q-mb-md">
+      <template #avatar><q-icon name="o_construction" /></template>
+      ‘{{ selectedTeamName }}’ 필터는 아직 구현되지 않았습니다. 현재 스케줄러는 <b>요양1팀</b> 기준으로 동작합니다.
+    </q-banner>
 
     <!-- 인력 알림 -->
     <q-card v-if="staffingAlerts.length" flat bordered class="alert-card q-mb-md">
