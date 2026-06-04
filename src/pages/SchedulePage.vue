@@ -357,19 +357,24 @@ onMounted(async () => {
 });
 
 // ── Shift presets (근무 유형) ─────────────────────────────────────────────────
+// 기본 유형은 하드코딩하지 않는다. ‘자동 생성’에서 설정한 교대 패턴이 곧 근무 유형이
+// 되고(설정 전에는 비어 있음), 사용자는 커스텀 유형을 추가로 만들 수 있다.
 interface Preset { label: string; start: string; end: string; hours: number }
-const DEFAULT_PRESETS: Preset[] = [
-  { label: "주간 12h (07:00–19:00)",   start: "07:00", end: "19:00", hours: 12 },
-  { label: "야간 12h (19:00–07:00)",   start: "19:00", end: "07:00", hours: 12 },
-  { label: "오전 8h (07:00–15:00)",    start: "07:00", end: "15:00", hours:  8 },
-  { label: "오후 8h (15:00–23:00)",    start: "15:00", end: "23:00", hours:  8 },
-  { label: "야간 8h (23:00–07:00)",    start: "23:00", end: "07:00", hours:  8 },
-];
 const MANUAL: Preset = { label: "직접", start: "", end: "", hours: 0 };
 
-// Custom 근무 유형 — saved locally (per device), deletable. Defaults are locked.
+const genConfigured = ref(false); // 자동 생성 설정을 한 번이라도 했는지
+const genPresets = computed<Preset[]>(() =>
+  genConfigured.value
+    ? genShifts.value.map((s) => ({
+        label: `${s.name} (${s.start}–${s.end})`,
+        start: s.start, end: s.end, hours: hoursBetween(s.start, s.end),
+      }))
+    : [],
+);
+
+// Custom 근무 유형 — saved locally (per device), deletable.
 const customPresets = ref<Preset[]>([]);
-const allPresets = computed(() => [...DEFAULT_PRESETS, ...customPresets.value]);
+const allPresets = computed(() => [...genPresets.value, ...customPresets.value]);
 const dialogPresets = computed(() => [...allPresets.value, MANUAL]);
 
 let presetStore: Store | null = null;
@@ -381,7 +386,25 @@ async function loadPresets() {
   try {
     const s = await presetsStore();
     customPresets.value = (await s.get<Preset[]>("custom_presets")) ?? [];
+    // 저장된 자동 생성 설정 복원 → 근무 유형 팔레트에 반영
+    const gf = await s.get<{ pattern: string; cycleWeeks: 1 | 2; maxWeekHours: number; shiftStarts: string[] }>("gen_form");
+    if (gf?.pattern && Array.isArray(gf.shiftStarts)) {
+      genForm.value.pattern = gf.pattern;
+      await nextTick(); // 패턴 watcher 가 shiftStarts 를 리셋한 뒤에 복원
+      genForm.value.cycleWeeks = gf.cycleWeeks ?? 1;
+      genForm.value.maxWeekHours = gf.maxWeekHours ?? 52;
+      genForm.value.shiftStarts = gf.shiftStarts;
+      genConfigured.value = true;
+    }
   } catch { customPresets.value = []; }
+}
+async function saveGenSettings() {
+  genConfigured.value = true;
+  try {
+    const s = await presetsStore();
+    await s.set("gen_form", { ...genForm.value, shiftStarts: [...genForm.value.shiftStarts] });
+    await s.save();
+  } catch { /* best effort */ }
 }
 async function savePresets() {
   const s = await presetsStore();
@@ -393,10 +416,13 @@ function isCustom(p: Preset) { return customPresets.value.some((c) => c.label ==
 // ── Add shift ─────────────────────────────────────────────────────────────────
 const showAdd    = ref(false);
 const submitting = ref(false);
+function defaultPreset(): Preset {
+  return allPresets.value[0] ?? MANUAL;
+}
 const form = ref({
   staff_id:    null as string | null,
   shift_date:  "",
-  preset:      DEFAULT_PRESETS[0],
+  preset:      MANUAL as Preset,
   shift_start: "07:00",
   shift_end:   "19:00",
   shift_hours: 12,
@@ -410,13 +436,14 @@ function applyPreset() {
   }
 }
 function openAddForCell(staffId: string, date: Date) {
+  const p = defaultPreset();
   form.value = {
     staff_id:    staffId,
     shift_date:  localDateStr(date),
-    preset:      DEFAULT_PRESETS[0],
-    shift_start: "07:00",
-    shift_end:   "19:00",
-    shift_hours: 12,
+    preset:      p,
+    shift_start: p.label === "직접" ? "07:00" : p.start,
+    shift_end:   p.label === "직접" ? "19:00" : p.end,
+    shift_hours: p.label === "직접" ? 12 : p.hours,
     notes:       "",
   };
   showAdd.value = true;
@@ -589,7 +616,7 @@ const editingId      = ref<string | null>(null);
 const editingStaffId = ref<string | null>(null);
 const editSubmitting = ref(false);
 const editForm = ref<{ shift_date: string; preset: Preset; shift_start: string; shift_end: string; shift_hours: number; notes: string }>({
-  shift_date: "", preset: DEFAULT_PRESETS[0], shift_start: "07:00", shift_end: "19:00", shift_hours: 12, notes: "",
+  shift_date: "", preset: MANUAL, shift_start: "07:00", shift_end: "19:00", shift_hours: 12, notes: "",
 });
 function applyEditPreset() {
   if (editForm.value.preset.label !== "직접") {
@@ -824,6 +851,7 @@ async function runPatternGeneration() {
     return;
   }
   showGenDialog.value = false;
+  saveGenSettings(); // 설정한 교대 패턴이 근무 유형 팔레트가 된다
   generating.value = true;
   try {
     const required = genRequired.value;
@@ -1022,6 +1050,9 @@ const showAlerts = ref(true);
         <q-icon name="o_drag_indicator" size="xs" class="q-mr-xs" />근무 유형을 셀로 드래그하여 배정하세요
       </div>
       <div class="row q-gutter-sm items-center">
+        <span v-if="!allPresets.length" class="text-caption text-grey-5">
+          ‘자동 생성’에서 교대 패턴을 설정하면 근무 유형이 여기에 표시됩니다.
+        </span>
         <div
           v-for="p in allPresets"
           :key="p.label"
