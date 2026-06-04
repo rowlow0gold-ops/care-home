@@ -723,6 +723,10 @@ const genGroupMin = computed(() => Math.floor(genWorkers.value.length / genPatte
 const genGroupMax = computed(() => Math.ceil(genWorkers.value.length / genPattern.value.groups));
 // 조당 최소 인원이 교대당 필요 인원(1:10)보다 적으면 인력 부족.
 const genShort = computed(() => genGroupMin.value < genRequired.value);
+// 주당 필요 시간(24h×7×필요인원) vs 가용 시간(인력×주 최대시간) — 부족하면 초과근무 발생.
+const genNeedHours = computed(() => 24 * 7 * genRequired.value);
+const genCapHours = computed(() => genWorkers.value.length * Math.max(8, genForm.value.maxWeekHours || 52));
+const genOvertimeExpected = computed(() => genCapHours.value < genNeedHours.value);
 
 // 달력에 고정된 주 번호 → 어느 주를 생성해도 회전이 일관되게 이어진다.
 function weekIndexOf(d: Date): number {
@@ -817,22 +821,37 @@ async function generateDayTeam(team: Team) {
     const { existing, addHours, hoursOf } = await buildSpanState(dates);
     const hrs = hoursBetween(team.shift_start_hm, team.shift_end_hm);
     const fresh: ScheduleEntry[] = [];
-    let ptr = 0, shortfall = 0;
+    const put = (w: OrgPerson, ds: string, tag: string) => {
+      existing.add(`${w.id}-${ds}`);
+      addHours(w.id, ds, hrs);
+      fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
+        shift_start: team.shift_start_hm, shift_end: team.shift_end_hm, shift_hours: hrs, notes: `${team.name} 자동${tag}` });
+    };
+    let ptr = 0, shortfall = 0, overtime = 0;
     for (const ds of dates) {
       let filled = 0, tries = 0;
       while (filled < required && tries < W.length) {
         const w = W[ptr % W.length]; ptr++; tries++;
         const key = `${w.id}-${ds}`;
         if (onLeave.has(key) || existing.has(key) || hoursOf(w.id, ds) + hrs > maxH) continue;
-        existing.add(key);
-        addHours(w.id, ds, hrs);
-        fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
-          shift_start: team.shift_start_hm, shift_end: team.shift_end_hm, shift_hours: hrs, notes: `${team.name} 자동` });
+        put(w, ds, "");
         filled++;
+      }
+      // 커버리지 우선: 한도를 넘더라도 매일 채운다 (휴가·이중근무 제외)
+      if (filled < required) {
+        const forced = W
+          .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
+          .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
+        for (const w of forced) {
+          if (filled >= required) break;
+          put(w, ds, " 초과");
+          filled++;
+          overtime++;
+        }
       }
       if (filled < required) shortfall++;
     }
-    finishGeneration(fresh, shortfall, "주간 1교대 · 1개월");
+    finishGeneration(fresh, shortfall, overtime, "주간 1교대 · 1개월");
   } finally { generating.value = false; }
 }
 
@@ -867,16 +886,16 @@ async function runPatternGeneration() {
     const canWork = (w: OrgPerson, ds: string, h: number) =>
       !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`) && hoursOf(w.id, ds) + h <= maxH;
     const fresh: ScheduleEntry[] = [];
-    const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, gi: number | null) => {
+    const assign = (w: OrgPerson, ds: string, sh: { name: string; start: string; end: string; hours: number }, tag: string) => {
       existing.add(`${w.id}-${ds}`);
       addHours(w.id, ds, sh.hours);
       fresh.push({ id: tempId(), staff_id: w.id, staff_name: w.full_name, shift_date: ds,
         shift_start: sh.start, shift_end: sh.end, shift_hours: sh.hours,
-        notes: `${team.name} ${sh.name}${gi === null ? " 대체" : `(${["A", "B", "C", "D"][gi] ?? gi + 1}조)`}` });
+        notes: `${team.name} ${sh.name}${tag}` });
     };
 
     const ptrs = groups.map(() => 0);
-    let shortfall = 0;
+    let shortfall = 0, overtime = 0;
     for (const d of days) {
       const ds = localDateStr(d);
       const period = Math.floor(weekIndexOf(d) / genForm.value.cycleWeeks); // 1~2주마다 주야 회전
@@ -887,28 +906,41 @@ async function runPatternGeneration() {
         while (filled < required && tries < g.length) {
           const w = g[ptrs[gi] % g.length]; ptrs[gi]++; tries++;
           if (!canWork(w, ds, sh.hours)) continue;
-          assign(w, ds, sh, gi);
+          assign(w, ds, sh, `(${["A", "B", "C", "D"][gi] ?? gi + 1}조)`);
           filled++;
         }
-        // 백필: 휴가·한도로 부족하면 그날 쉬는 인력 중 주간 누적시간이 적은 순으로 대체
+        // 2차 백필: 휴가·한도로 부족하면 그날 쉬는 인력 중 누적시간 적은 순으로 대체
         if (filled < required) {
           const subs = genWorkers.value
             .filter((w) => canWork(w, ds, sh.hours))
             .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
           for (const w of subs) {
             if (filled >= required) break;
-            assign(w, ds, sh, null);
+            assign(w, ds, sh, " 대체");
             filled++;
           }
         }
-        if (filled < required) shortfall++;
+        // 3차 강제 배치: 24시간·매일 커버가 최우선 — 주 최대시간을 넘더라도 채운다.
+        //   (휴가와 하루 1근무만 절대 규칙. 초과분은 '초과'로 표기 + 경고)
+        if (filled < required) {
+          const forced = genWorkers.value
+            .filter((w) => !onLeave.has(`${w.id}-${ds}`) && !existing.has(`${w.id}-${ds}`))
+            .sort((a, b) => hoursOf(a.id, ds) - hoursOf(b.id, ds));
+          for (const w of forced) {
+            if (filled >= required) break;
+            assign(w, ds, sh, " 초과");
+            filled++;
+            overtime++;
+          }
+        }
+        if (filled < required) shortfall++; // 그날 전원이 휴가/근무중일 때만 남는 진짜 공백
       });
     }
-    finishGeneration(fresh, shortfall, `${pat.label} · 1개월`);
+    finishGeneration(fresh, shortfall, overtime, `${pat.label} · 1개월`);
   } finally { generating.value = false; }
 }
 
-async function finishGeneration(fresh: ScheduleEntry[], shortfall: number, patternLabel: string) {
+async function finishGeneration(fresh: ScheduleEntry[], shortfall: number, overtime: number, patternLabel: string) {
   if (!fresh.length) {
     $q.notify({ type: "info", message: "생성할 빈 칸이 없습니다. (이미 채워져 있습니다)" });
     return;
@@ -918,9 +950,15 @@ async function finishGeneration(fresh: ScheduleEntry[], shortfall: number, patte
   rebuild();
   if (shortfall > 0) {
     $q.notify({
-      type: "warning", icon: "o_warning", timeout: 7000,
-      message: `${fresh.length}건 생성 — 인력 부족!`,
-      caption: `${shortfall}개 교대에서 1:10 기준 인원을 채우지 못했습니다. 아래 인력 알림을 확인하세요.`,
+      type: "warning", icon: "o_warning", timeout: 8000,
+      message: `${fresh.length}건 생성 — 공백 ${shortfall}건!`,
+      caption: `해당 시간대에 배치 가능한 인력이 아무도 없습니다(전원 휴가/근무중). 인력 알림을 확인하세요.`,
+    });
+  } else if (overtime > 0) {
+    $q.notify({
+      type: "warning", icon: "o_schedule", timeout: 8000,
+      message: `${fresh.length}건 생성 — 24시간 커버 완료, 초과근무 ${overtime}건`,
+      caption: `주 최대 근무시간을 넘겨 배치된 근무가 있습니다('초과' 표기). 인력 충원을 권장합니다.`,
     });
   } else {
     $q.notify({ type: "positive", message: `${fresh.length}건 생성 (${patternLabel} · 24시간 커버). 확인 후 저장하세요.` });
@@ -1386,13 +1424,18 @@ const showAlerts = ref(true);
             <q-icon name="o_event" size="14px" /> 생성 기간: 이번 주 시작일부터 <b>1개월(4주)</b> ·
             승인된 휴가는 제외되고, 부족분은 쉬는 인력으로 자동 대체됩니다.
           </div>
-          <q-banner dense rounded :class="genShort ? 'bg-red-1 text-red-9' : 'bg-green-1 text-green-9'">
-            <template #avatar><q-icon :name="genShort ? 'o_warning' : 'o_check_circle'" /></template>
+          <q-banner dense rounded
+            :class="genShort ? 'bg-red-1 text-red-9' : genOvertimeExpected ? 'bg-orange-1 text-orange-10' : 'bg-green-1 text-green-9'">
+            <template #avatar><q-icon :name="genShort || genOvertimeExpected ? 'o_warning' : 'o_check_circle'" /></template>
             어르신 {{ genElders }}명 → 교대당 <b>{{ genRequired }}명</b> 필요 (1:10)<br />
-            배정 인력 {{ genWorkers.length }}명 → {{ genPattern.groups }}개 조, 조당 {{ genGroupMin }}~{{ genGroupMax }}명
+            배정 인력 {{ genWorkers.length }}명 → {{ genPattern.groups }}개 조, 조당 {{ genGroupMin }}~{{ genGroupMax }}명<br />
+            주당 필요 {{ genNeedHours }}h / 가용 {{ genCapHours }}h
             <template v-if="genShort">
-              <br /><b>⚠ 인력 부족:</b> 조당 최소 {{ genRequired }}명이 필요합니다. 부족한 교대는
-              가능한 인원만 배치되며 ‘인력 알림’에 표시됩니다.
+              <br /><b>⚠ 인력 부족:</b> 조당 최소 {{ genRequired }}명이 필요합니다.
+            </template>
+            <template v-if="genOvertimeExpected">
+              <br /><b>⚠ 초과근무 발생:</b> 24시간·매일 커버를 위해 일부 인력이 주 최대시간을
+              넘겨 배치됩니다('초과' 표기). 인력 충원을 권장합니다.
             </template>
           </q-banner>
         </q-card-section>
