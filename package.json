@@ -20,7 +20,7 @@
     "@tauri-apps/plugin-process": "^2",
     "chart.js": "^4.5.1",
     "pinia": "^3.0.4",
-    "quasar": "^2.19.3",
+    "quasar": "^2.22.0",
     "vue": "^3.5.13",
     "vue-router": "^5.0.6",
     "xlsx": "0.18.5"
